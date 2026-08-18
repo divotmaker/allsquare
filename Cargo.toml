@@ -1,0 +1,41 @@
+[package]
+name = "allsquare"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.94"
+description = "Client library for the Square Golf Omni launch monitor"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/divotmaker/allsquare"
+keywords = ["golf", "launch-monitor", "bluetooth", "ble", "square-golf"]
+categories = ["hardware-support", "science"]
+
+[dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"], optional = true }
+
+# Linux: BlueZ over D-Bus. Also used for scanning even when GATT is elsewhere.
+zbus = { version = "5", features = ["blocking-api"], optional = true }
+
+# Cross-platform BLE. Verified on Windows (WinRT).
+btleplug = { version = "0.11", optional = true }
+flightrelay = { version = "0.1.7", features = ["server"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"], optional = true }
+futures = { version = "0.3", optional = true }
+uuid = { version = "1", optional = true }
+
+[[bin]]
+name = "allsquare-frp"
+path = "src/bin/allsquare-frp.rs"
+# A transport is also needed, but Cargo cannot express "frp AND (bluez OR
+# btleplug)" — the binary emits a compile_error if neither is enabled.
+required-features = ["frp"]
+
+[features]
+default = []
+serde = ["dep:serde"]
+bluez = ["dep:zbus"]
+frp = ["dep:flightrelay"]
+btleplug = ["dep:btleplug", "dep:tokio", "dep:futures", "dep:uuid"]
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
