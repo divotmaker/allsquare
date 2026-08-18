@@ -21,5 +21,12 @@ jobs:
       - name: Run tests
         run: cargo test --lib --features bluez,frp,serde
 
-      - name: Check btleplug backend
-        run: cargo check --lib --features btleplug,frp,serde
+      # btleplug ships for Windows/macOS; Linux uses the bluez backend. Check
+      # it against the target it is actually built for — compiling it natively
+      # would pull btleplug's Linux backend (bluez-async -> dbus -> libdbus-sys)
+      # and require libdbus-1-dev for a configuration that is never shipped.
+      - name: Add Windows target
+        run: rustup target add x86_64-pc-windows-gnu
+
+      - name: Check btleplug backend (Windows target)
+        run: cargo check --lib --target x86_64-pc-windows-gnu --features btleplug,frp,serde
