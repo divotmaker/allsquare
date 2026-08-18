@@ -6,8 +6,8 @@
 
 ## Disclaimer
 
-This project is not affiliated with or endorsed by Invant Co., Ltd.
-Square Golf and Square Omni are trademarks of their respective owner.
+This project is not affiliated with or endorsed by Invant Inc.
+Square Golf and Square Omni are trademarks of Invant Inc.
 
 ## Description
 

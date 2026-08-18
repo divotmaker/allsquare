@@ -216,12 +216,20 @@ the unit setting.
 | 5–6 | 2 | launch angle | ÷100 deg |
 | 7–8 | 2 | direction | ÷100 deg, positive right |
 | 9–10 | 2 | total spin | RPM |
-| 11–12 | 2 | spin axis | ÷100 deg |
+| 11–12 | 2 | spin axis | ÷100 deg, **negative curves right** |
 | 13–14 | 2 | backspin | RPM |
-| 15–16 | 2 | sidespin | RPM |
+| 15–16 | 2 | sidespin | RPM, **negative curves right** |
 
 The shot type byte reads `0x37` for every shot, including putts. It does **not**
 distinguish shot modes on this device.
+
+**Sidespin and spin axis are sign-inverted relative to the common convention.**
+The device reports *negative* values for a ball curving right — a fade for a
+right-hander — where most launch monitors and sim integrations treat positive as
+rightward. Consumers that assume the usual convention must negate both, or fades
+will draw and draws will fade. The device stays internally consistent: spin axis
+equals `atan2(sidespin, backspin)` in its own signs. Direction (offset 7–8) is
+*not* affected — it is positive-right as usual.
 
 Carry, total distance, roll, apex and flight time are **not transmitted**. The
 device measures launch only; any flight model is the consumer's responsibility.

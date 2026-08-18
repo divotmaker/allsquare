@@ -10,13 +10,14 @@ use crate::protocol::{BallMetrics, ClubMetrics};
 /// The device measures launch only — carry, total, roll, apex and flight time
 /// are computed by the vendor's app, not the hardware, so they stay `None`.
 ///
-/// Sign conventions line up with the spec without adjustment:
+/// Sign conventions:
 /// - `launch_azimuth` is "positive = right of target"; the device's `direction`
-///   is already positive-right.
-/// - `sidespin_rpm` is "positive = curves rightward"; the device pairs negative
-///   sidespin with a negative spin axis (a draw for a right-hander), so its
-///   polarity already matches. Note this differs from `GSPro`, which wants both
-///   sidespin and spin axis negated.
+///   is already positive-right, so it passes through.
+/// - `sidespin_rpm` is "positive = curves rightward"; the device is the
+///   opposite, so it is **negated**. Verified on course: without this, fades
+///   draw and draws fade downstream. The device's own `spin_axis` carries the
+///   same inverted polarity — it is left as measured on [`BallMetrics`] and is
+///   not forwarded, since FRP derives curvature from the spin components.
 #[must_use]
 pub fn ball_flight(b: &BallMetrics) -> BallFlight {
     BallFlight {
@@ -29,7 +30,7 @@ pub fn ball_flight(b: &BallMetrics) -> BallFlight {
         max_height: None,
         flight_time: None,
         backspin_rpm: Some(i32::from(b.back_spin)),
-        sidespin_rpm: Some(i32::from(b.side_spin)),
+        sidespin_rpm: Some(-i32::from(b.side_spin)),
     }
 }
 
@@ -116,7 +117,9 @@ mod tests {
         assert_eq!(frp.launch_elevation, Some(32.51));
         assert_eq!(frp.launch_azimuth, Some(7.39));
         assert_eq!(frp.backspin_rpm, Some(621));
-        assert_eq!(frp.sidespin_rpm, Some(-87));
+        // Wire -87 (device: negative = curves right) -> FRP +87 (positive =
+        // curves right). The sign is inverted, not passed through.
+        assert_eq!(frp.sidespin_rpm, Some(87));
         // Measured at launch only; the app computes the rest.
         assert_eq!(frp.carry_distance, None);
         assert_eq!(frp.total_distance, None);

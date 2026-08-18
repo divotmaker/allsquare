@@ -249,11 +249,17 @@ pub struct BallMetrics {
     pub direction: f64,
     /// Total spin, RPM.
     pub total_spin: i16,
-    /// Spin axis, degrees.
+    /// Spin axis, degrees, as reported by the device: **negative tilts the
+    /// ball right** (a fade for a right-hander). This is the opposite of the
+    /// usual convention — see [`side_spin`](Self::side_spin).
     pub spin_axis: f64,
     /// Backspin, RPM.
     pub back_spin: i16,
-    /// Sidespin, RPM.
+    /// Sidespin, RPM, as reported by the device: **negative curves the ball
+    /// right** (a fade for a right-hander), the same polarity the device uses
+    /// for [`spin_axis`](Self::spin_axis). Consumers expecting the common
+    /// "positive = rightward" convention (including FRP and `GSPro`) must negate
+    /// this; [`frp::ball_flight`](crate::frp::ball_flight) already does.
     pub side_spin: i16,
 }
 
