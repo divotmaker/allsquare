@@ -1,11 +1,16 @@
-//! allsquare-frp — Flight Relay Protocol device server for Square Golf.
+//! allsquare-frp — Flight Relay Protocol device for Square Golf.
 //!
-//! Connects to a Square Golf Omni (or Home) over BLE, arms it, and serves shot
-//! data over FRP (WebSocket, port 5880) to any connected controller.
+//! Connects to a Square Golf Omni (or Home) over BLE, arms it, and streams shot
+//! data over FRP to a controller.
+//!
+//! The first argument selects the transport direction. A `ws://` or `wss://`
+//! URL bridges this device to a central controller such as flighthook; anything
+//! else is a bind address that controllers connect to.
 //!
 //! ```sh
-//! allsquare-frp                       # 7-iron, 0.0.0.0:5880
-//! allsquare-frp 0.0.0.0:5880 pw       # explicit address and club
+//! allsquare-frp                              # serve on 0.0.0.0:5880, 7-iron
+//! allsquare-frp 0.0.0.0:5880 pw              # serve, explicit address and club
+//! allsquare-frp ws://flighthook:5880/frp pw  # bridge to flighthook
 //! ```
 
 #[cfg(not(any(feature = "bluez", feature = "btleplug")))]
@@ -19,7 +24,7 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::Duration;
 
-use allsquare::frp::FrpServer;
+use allsquare::frp::FrpDevice;
 use allsquare::{Client, Club, Event, SpinMode, ble};
 
 fn club_from_arg(arg: Option<&str>) -> Club {
@@ -43,28 +48,27 @@ fn club_from_arg(arg: Option<&str>) -> Club {
 }
 
 fn main() -> ExitCode {
-    let frp_addr = std::env::args()
+    let frp_target = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "0.0.0.0:5880".to_owned());
     let club = club_from_arg(std::env::args().nth(2).as_deref());
+    let bridging = frp_target.starts_with("ws://") || frp_target.starts_with("wss://");
 
-    eprintln!("allsquare-frp: FRP server on {frp_addr}");
-
-    // Bind first so a controller can connect while we are still scanning.
-    let mut frp = match FrpServer::bind(&frp_addr) {
+    // Open the endpoint first so it connects while we are still scanning.
+    let frp = if bridging {
+        eprintln!("allsquare-frp: bridging to controller at {frp_target}");
+        FrpDevice::bridge(&frp_target, "allsquare")
+    } else {
+        eprintln!("allsquare-frp: serving controllers on {frp_target}");
+        FrpDevice::serve(&frp_target)
+    };
+    let mut frp = match frp {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("allsquare-frp: failed to bind FRP server: {e}");
+            eprintln!("allsquare-frp: failed to open FRP endpoint: {e}");
             return ExitCode::FAILURE;
         }
     };
-
-    eprintln!("allsquare-frp: waiting for FRP controller...");
-    if let Err(e) = frp.accept() {
-        eprintln!("allsquare-frp: controller accept failed: {e}");
-        return ExitCode::FAILURE;
-    }
-    eprintln!("allsquare-frp: controller connected");
 
     // Scan and connect. The device is never paired or bonded.
     eprintln!("allsquare-frp: scanning for device...");
@@ -118,6 +122,13 @@ fn main() -> ExitCode {
                 }
             }
             Ok(None) => {
+                // Adopt a newly established controller connection
+                match frp.poll_connection() {
+                    Ok(true) => eprintln!("allsquare-frp: controller connected"),
+                    Ok(false) => {}
+                    Err(e) => eprintln!("allsquare-frp: telemetry resend failed: {e}"),
+                }
+
                 // Square Golf has no device-side shot mode — putting and
                 // chipping differ only by club — so a detection-mode request is
                 // logged and ignored rather than silently dropped.

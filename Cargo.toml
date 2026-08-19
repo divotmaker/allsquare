@@ -1,6 +1,6 @@
 [package]
 name = "allsquare"
-version = "0.0.3"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.94"
 description = "Client library for the Square Golf Omni launch monitor"
@@ -18,7 +18,7 @@ zbus = { version = "5", features = ["blocking-api"], optional = true }
 
 # Cross-platform BLE. Verified on Windows (WinRT).
 btleplug = { version = "0.11", optional = true }
-flightrelay = { version = "0.1.7", features = ["server"], optional = true }
+flightrelay = { version = "0.2.1", features = ["transport"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"], optional = true }
 futures = { version = "0.3", optional = true }
 uuid = { version = "1", optional = true }

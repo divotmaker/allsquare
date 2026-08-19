@@ -1,16 +1,27 @@
-//! FRP device server — bridges Square Golf to the
+//! FRP device adapter — bridges Square Golf to the
 //! [Flight Relay Protocol](https://github.com/flightrelay/spec).
 //!
 //! Maps [`Event`]s from a connected device to FRP envelopes and streams them to
-//! a controller over WebSocket (port 5880 by default).
+//! an FRP controller. The adapter always plays the FRP [`Role::Device`]; the
+//! transport direction is the caller's choice:
+//!
+//! - [`FrpDevice::serve`] accepts controllers on a local port (default 5880)
+//! - [`FrpDevice::bridge`] dials a central controller such as flighthook
+//!
+//! Connections are established on a background thread so the caller's poll loop
+//! never blocks, and a dropped connection is re-established automatically.
 //!
 //! Requires the `frp` feature.
 
 mod convert;
 
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::thread;
+use std::time::Duration;
+
 use flightrelay::{
-    FrpConnection, FrpEnvelope, FrpEvent, FrpListener, FrpMessage, FrpProtocolMessage,
-    SPEC_VERSION, ShotKey,
+    EndpointConfig, FrpConnection, FrpEndpoint, FrpEnvelope, FrpEvent, FrpMessage,
+    FrpProtocolMessage, Role, SPEC_VERSION, ShotKey, Transport,
 };
 
 use crate::client::Event;
@@ -20,13 +31,23 @@ pub use convert::{ball_flight, club_data, face_impact};
 
 const MANUFACTURER: &str = "Invant";
 
-/// An FRP device server backed by a Square Golf connection.
+/// Backoff between failed connection attempts.
+const RETRY_DELAY: Duration = Duration::from_secs(2);
+
+/// An FRP device backed by a Square Golf connection.
 ///
 /// The caller drives both the [`Client`](crate::Client) poll loop and this
-/// server from the same thread.
-pub struct FrpServer {
-    listener: FrpListener,
+/// adapter from the same thread.
+pub struct FrpDevice {
     conn: Option<FrpConnection>,
+    /// Signals the acceptor thread to establish a connection.
+    request: Sender<()>,
+    /// Receives established connections from the acceptor thread.
+    incoming: Receiver<FrpConnection>,
+    /// True while the acceptor thread is working on a connection.
+    pending: bool,
+    /// Last telemetry envelope, re-sent to each newly connected controller.
+    telemetry: Option<FrpEnvelope>,
     device: String,
     firmware: Option<String>,
     model: Option<String>,
@@ -35,22 +56,105 @@ pub struct FrpServer {
     last_ready: Option<bool>,
 }
 
-impl FrpServer {
-    /// Bind the FRP listener on the given address, e.g. `"0.0.0.0:5880"`.
+impl FrpDevice {
+    /// Accept controllers on `addr`, e.g. `"0.0.0.0:5880"`.
     ///
     /// # Errors
     /// If the listener cannot bind.
-    pub fn bind(addr: &str) -> Result<Self, flightrelay::FrpError> {
-        let listener = FrpListener::bind(addr, &[SPEC_VERSION])?;
-        Ok(Self {
-            listener,
+    pub fn serve(addr: &str) -> Result<Self, flightrelay::FrpError> {
+        Self::spawn(EndpointConfig::new(Role::Device, Transport::listen(addr)))
+    }
+
+    /// Dial a central controller at `url`, e.g. `"ws://flighthook:5880/frp"`,
+    /// identifying as `name`.
+    ///
+    /// # Errors
+    /// If the endpoint cannot be opened.
+    pub fn bridge(url: &str, name: &str) -> Result<Self, flightrelay::FrpError> {
+        Self::spawn(
+            EndpointConfig::new(Role::Device, Transport::connect(url))
+                .with_name(name)
+                .with_versions(&[SPEC_VERSION]),
+        )
+    }
+
+    fn spawn(config: EndpointConfig) -> Result<Self, flightrelay::FrpError> {
+        let mut endpoint = FrpEndpoint::open(config)?;
+        let (request, request_rx) = mpsc::channel::<()>();
+        let (conn_tx, incoming) = mpsc::channel::<FrpConnection>();
+
+        thread::spawn(move || {
+            while request_rx.recv().is_ok() {
+                // Retry until connected — one request yields one connection.
+                loop {
+                    match endpoint.establish() {
+                        Ok(conn) if conn.set_nonblocking(true).is_ok() => {
+                            if conn_tx.send(conn).is_err() {
+                                return;
+                            }
+                            break;
+                        }
+                        // Back off so a refused dial or rejected handshake
+                        // does not spin the thread.
+                        _ => thread::sleep(RETRY_DELAY),
+                    }
+                }
+            }
+        });
+
+        let mut device = Self {
             conn: None,
+            request,
+            incoming,
+            pending: false,
+            telemetry: None,
             device: String::new(),
             firmware: None,
             model: None,
             shot_number: 0,
             last_ready: None,
-        })
+        };
+        device.request_connection();
+        Ok(device)
+    }
+
+    /// Ask the acceptor thread for a connection, unless one is already pending.
+    fn request_connection(&mut self) {
+        if !self.pending && self.request.send(()).is_ok() {
+            self.pending = true;
+        }
+    }
+
+    /// Adopt a newly established connection, if one is ready.
+    ///
+    /// Call once per poll-loop iteration. Re-sends the cached telemetry
+    /// envelope to each newly connected controller, as the spec requires.
+    ///
+    /// Returns `true` when a connection was adopted.
+    ///
+    /// # Errors
+    /// If the telemetry re-send fails.
+    pub fn poll_connection(&mut self) -> Result<bool, flightrelay::FrpError> {
+        if self.conn.is_some() {
+            return Ok(false);
+        }
+        match self.incoming.try_recv() {
+            Ok(conn) => {
+                self.pending = false;
+                self.conn = Some(conn);
+                if let Some(env) = self.telemetry.clone() {
+                    self.send_envelope(&env)?;
+                }
+                Ok(true)
+            }
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => Ok(false),
+        }
+    }
+
+    /// Whether a controller is currently connected.
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        self.conn.is_some()
     }
 
     /// Set the device name, e.g. `"SquareGolf(54E4)"`.
@@ -70,24 +174,6 @@ impl FrpServer {
         }
     }
 
-    /// Accept a controller connection (blocking). Replaces any existing one.
-    ///
-    /// # Errors
-    /// If the WebSocket handshake fails.
-    pub fn accept(&mut self) -> Result<(), flightrelay::FrpError> {
-        let conn = self.listener.accept()?;
-        conn.set_nonblocking(true)?;
-        self.conn = Some(conn);
-        self.last_ready = None;
-        Ok(())
-    }
-
-    /// Whether a controller is currently connected.
-    #[must_use]
-    pub fn has_controller(&self) -> bool {
-        self.conn.is_some()
-    }
-
     /// Poll for controller commands (non-blocking).
     ///
     /// Returns a [`DetectionMode`](flightrelay::DetectionMode) if the controller
@@ -100,8 +186,8 @@ impl FrpServer {
             Ok(Some(FrpMessage::Protocol(FrpProtocolMessage::SetDetectionMode {
                 mode, ..
             }))) => mode,
-            Err(flightrelay::FrpError::Closed) => {
-                self.conn = None;
+            Err(_) => {
+                self.drop_connection();
                 None
             }
             _ => None,
@@ -114,6 +200,27 @@ impl FrpServer {
     /// If the send fails.
     pub fn send_device_info(&mut self) -> Result<(), flightrelay::FrpError> {
         self.send_telemetry(None, None)
+    }
+
+    /// Drop the current connection and ask for a replacement.
+    fn drop_connection(&mut self) {
+        self.conn = None;
+        self.request_connection();
+    }
+
+    /// Send one envelope, dropping the connection if the peer has gone away.
+    fn send_envelope(&mut self, env: &FrpEnvelope) -> Result<(), flightrelay::FrpError> {
+        let Some(conn) = self.conn.as_mut() else {
+            return Ok(());
+        };
+        match conn.send_envelope(env) {
+            Ok(()) => Ok(()),
+            Err(flightrelay::FrpError::Closed) => {
+                self.drop_connection();
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Process a client [`Event`] and emit the resulting FRP envelopes.
@@ -186,10 +293,6 @@ impl FrpServer {
             self.last_ready = Some(r);
         }
 
-        let Some(conn) = self.conn.as_mut() else {
-            return Ok(());
-        };
-
         let mut telemetry = std::collections::HashMap::new();
         telemetry.insert(
             flightrelay::types::telemetry::READY.to_owned(),
@@ -212,33 +315,20 @@ impl FrpServer {
             },
         };
 
-        conn.send_envelope(&env).or_else(|e| {
-            if matches!(e, flightrelay::FrpError::Closed) {
-                self.conn = None;
-                Ok(())
-            } else {
-                Err(e)
-            }
-        })
+        self.telemetry = Some(env.clone());
+        self.send_envelope(&env)
     }
 
     fn send_events(&mut self, events: &[FrpEvent]) -> Result<(), flightrelay::FrpError> {
-        let Some(conn) = self.conn.as_mut() else {
-            return Ok(());
-        };
         for event in events {
+            if self.conn.is_none() {
+                return Ok(());
+            }
             let env = FrpEnvelope {
                 device: self.device.clone(),
                 event: event.clone(),
             };
-            match conn.send_envelope(&env) {
-                Ok(()) => {}
-                Err(flightrelay::FrpError::Closed) => {
-                    self.conn = None;
-                    return Ok(());
-                }
-                Err(e) => return Err(e),
-            }
+            self.send_envelope(&env)?;
         }
         Ok(())
     }

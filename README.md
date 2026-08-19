@@ -19,9 +19,10 @@ BLE protocol and exposes shot data through a synchronous, poll-based API:
   state tracking automatically.
 - **`ble::connect`** — platform-agnostic BLE transport. BlueZ on Linux
   (`bluez` feature), btleplug on Windows/macOS (`btleplug` feature).
-- **`FrpServer`** — [Flight Relay Protocol](https://github.com/flightrelay/spec)
-  device server (`frp` feature). Bridges shot data to any FRP controller over
-  WebSocket (port 5880).
+- **`FrpDevice`** — [Flight Relay Protocol](https://github.com/flightrelay/spec)
+  device (`frp` feature). Bridges shot data to an FRP controller over WebSocket,
+  either serving controllers on a local port (default 5880) or dialing a central
+  controller such as flighthook.
 
 ## Legal Basis — DMCA Section 1201(f)
 
