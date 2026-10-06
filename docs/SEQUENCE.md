@@ -31,7 +31,19 @@ Scan for a device whose advertised name begins with `SquareGolf`. The full name
 is `SquareGolf(XXXX)` where `XXXX` is the last two bytes of the BLE address.
 
 The advertisement also carries manufacturer data under company ID `0xFFFF`
-containing an ASCII model code (e.g. `0300A`). Do not filter on the company ID.
+containing an ASCII model code (e.g. `0300A`). Do not filter on the company ID
+alone — `0xFFFF` is the reserved test ID and other devices use it too — but the
+company ID together with the model code identifies an Omni.
+
+The Omni's GAP device name, `SGO300A`, differs from its advertised name. Stacks
+that cache the GAP name report it for a device they have connected to before:
+macOS reports `SGO300A [SquareGolf(XXXX)]`, or just `SGO300A` for an
+advertisement that carries no name. A robust scan accepts any of the advertised
+name prefix, the manufacturer data, or the GAP name.
+
+To pin one device, match its advertised name. It is the same on every OS,
+whereas the BLE address is hidden on macOS, which reports a per-host peripheral
+UUID instead.
 
 **Stop scanning before connecting.** Connecting while discovery is active is
 unreliable on some stacks. A short settle delay (~250 ms) after stopping the
@@ -73,7 +85,8 @@ completes the transaction.
 ### Platform notes
 
 - **Windows / macOS** — no special handling. WinRT answers the device's requests
-  and negotiates a larger MTU automatically.
+  and negotiates a larger MTU automatically. macOS hides BLE addresses and
+  reports the cached GAP name, as described under Discovery.
 - **Linux / BlueZ** — set the device's `Trusted` property before connecting.
   An untrusted, unpaired device is treated as temporary: service discovery never
   completes, the link drops after a few seconds, and the device object is
@@ -173,6 +186,14 @@ Send `0x81` with mode `0x00` to stop detection before disconnecting. This is
 courtesy, not a requirement.
 
 A zero-length notification signals that the device is tearing the link down.
+
+**Always disconnect explicitly when done.** The device accepts one central at a
+time and stops advertising while connected, so a connection a host leaves open
+hides it from every later scan, including the same host's.
+
+Not every stack reports link loss promptly. The device acknowledges every
+heartbeat, so a link that has delivered nothing for three heartbeat intervals
+(15 s) can be treated as lost.
 
 On reconnect, re-run phases 2–4. Re-select the club — the device does not
 persist the client's selection in a way a new session can rely on.

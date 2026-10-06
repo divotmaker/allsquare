@@ -132,6 +132,27 @@ BlueZ needs two workarounds, both applied automatically by the `bluez` backend:
 2. `Connect()` never sends a D-Bus reply for this device, so it is dispatched
    with `NO_REPLY_EXPECTED` and `ServicesResolved` is polled instead.
 
+### Pinning a device
+
+`ble::connect(None)` takes the first Square Golf device found. To pin one, pass
+its advertised name, e.g. `ble::connect(Some("SquareGolf(54E4)"))` — the name is
+the same on every OS. The BLE address also works, or on macOS, which hides
+addresses, the peripheral UUID. Matching ignores case.
+
+### macOS specifics
+
+- macOS hides BLE addresses; `address()` returns the peripheral UUID, which is
+  specific to that Mac. Pin by advertised name for a portable configuration.
+- Dropping the transport disconnects the device. The Omni accepts one central at
+  a time and stops advertising while connected, so a connection left open would
+  hide it from later scans.
+- Bluetooth permission belongs to the app that launches the program, e.g.
+  Terminal. If its permission prompt is denied, that first run finds no device;
+  later launches fail with "permission denied". Grant it in System Settings ›
+  Privacy & Security › Bluetooth.
+- A powered-off adapter is reported as an error from `connect`, and the next
+  `connect` retries.
+
 ## Example
 
 ```sh

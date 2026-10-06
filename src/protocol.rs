@@ -59,6 +59,38 @@ pub fn advertised_name(reported: &str) -> Option<&str> {
     advertised.starts_with(NAME_PREFIX).then_some(advertised)
 }
 
+/// Company identifier the Omni advertises its manufacturer data under.
+pub const MANUFACTURER_ID: u16 = 0xffff;
+
+/// Manufacturer data payload advertised by the Omni: its model code.
+pub const OMNI_MODEL: &[u8] = b"0300A";
+
+/// GAP device name of the Omni, distinct from its advertised name.
+pub const OMNI_GAP_NAME: &str = "SGO300A";
+
+/// Whether an advertisement belongs to a Square Golf device.
+///
+/// `reported` is the name the BLE stack reports, `manufacturer_data` the
+/// advertised manufacturer-specific data as `(company id, payload)` pairs. A
+/// device matches if any of these hold:
+///
+/// - the reported name contains an advertised `SquareGolf…` name (see
+///   [`advertised_name`]);
+/// - the manufacturer data carries [`OMNI_MODEL`] under [`MANUFACTURER_ID`];
+/// - the reported name is exactly [`OMNI_GAP_NAME`]. Some stacks report only
+///   the cached GAP name for an advertisement that carries no name.
+#[must_use]
+pub fn is_square_golf<'a>(
+    reported: &str,
+    manufacturer_data: impl IntoIterator<Item = (u16, &'a [u8])>,
+) -> bool {
+    advertised_name(reported).is_some()
+        || reported == OMNI_GAP_NAME
+        || manufacturer_data
+            .into_iter()
+            .any(|(company, payload)| company == MANUFACTURER_ID && payload == OMNI_MODEL)
+}
+
 /// Every command is exactly this long.
 pub const COMMAND_LEN: usize = 9;
 
@@ -510,6 +542,38 @@ mod tests {
         assert_eq!(advertised_name("SGO300A"), None);
         assert_eq!(advertised_name("AirPods [Headphones]"), None);
         assert_eq!(advertised_name("Speaker [SquareGolf"), None);
+    }
+
+    #[test]
+    fn matches_by_advertised_name() {
+        assert!(is_square_golf("SquareGolf(54E4)", []));
+        assert!(is_square_golf("SGO300A [SquareGolf(54E4)]", []));
+    }
+
+    #[test]
+    fn matches_by_gap_name_alone() {
+        assert!(is_square_golf("SGO300A", []));
+        assert!(!is_square_golf("SGO300B", []));
+        assert!(!is_square_golf("xSGO300A", []));
+    }
+
+    #[test]
+    fn matches_by_manufacturer_data() {
+        assert!(is_square_golf("", [(0xffff, &b"0300A"[..])]));
+        assert!(is_square_golf(
+            "",
+            [(0x004c, &[1u8, 2][..]), (0xffff, &b"0300A"[..])]
+        ));
+        // Wrong company, or the right company with another payload.
+        assert!(!is_square_golf("", [(0x004c, &b"0300A"[..])]));
+        assert!(!is_square_golf("", [(0xffff, &b"0300"[..])]));
+        assert!(!is_square_golf("", [(0xffff, &b"0300AB"[..])]));
+    }
+
+    #[test]
+    fn rejects_unrelated_devices() {
+        assert!(!is_square_golf("", []));
+        assert!(!is_square_golf("AirPods", [(0x004c, &[0x07u8, 0x19][..])]));
     }
 
     fn hex(s: &str) -> Vec<u8> {

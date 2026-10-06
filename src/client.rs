@@ -135,6 +135,16 @@ pub enum Event {
     Alignment(f64),
 }
 
+/// Silence after which the link is presumed dead: three heartbeat intervals.
+/// The device acknowledges every heartbeat, so a healthy link never stays
+/// quiet this long.
+const LINK_TIMEOUT: Duration = Duration::from_secs(3 * HEARTBEAT_SECS);
+
+/// Heartbeats that must go unanswered, alongside [`LINK_TIMEOUT`], before the
+/// link is presumed dead. Guards against a caller that stopped polling — and so
+/// stopped sending heartbeats — for a while: silence it caused is not a fault.
+const UNANSWERED_HEARTBEATS: u32 = 2;
+
 /// Connection phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -153,6 +163,12 @@ pub struct Client<T: Transport> {
     queue: VecDeque<Event>,
     last_heartbeat: Instant,
     heartbeat_interval: Duration,
+    /// When anything was last received, duplicates included.
+    last_data: Instant,
+    /// Heartbeats sent since anything was last received.
+    unanswered: u32,
+    /// Silence after which the link is presumed dead.
+    link_timeout: Duration,
     state: Option<DeviceState>,
     /// Ball metrics awaiting their club packet.
     pending_shot: Option<BallMetrics>,
@@ -173,6 +189,9 @@ impl<T: Transport> Client<T> {
             queue: VecDeque::new(),
             last_heartbeat: Instant::now(),
             heartbeat_interval: Duration::from_secs(HEARTBEAT_SECS),
+            last_data: Instant::now(),
+            unanswered: 0,
+            link_timeout: LINK_TIMEOUT,
             state: None,
             pending_shot: None,
             awaiting_club: false,
@@ -272,9 +291,14 @@ impl<T: Transport> Client<T> {
     /// Call this in a loop. It reads at most one notification per call and
     /// sends the heartbeat when due.
     ///
+    /// The device acknowledges every heartbeat, so a link that has delivered
+    /// nothing for three heartbeat intervals (15 s) is treated as lost, even
+    /// if the transport never reported it.
+    ///
     /// # Errors
-    /// [`Error::Disconnected`] if the device closed the link, or a transport
-    /// error. Malformed frames are skipped rather than surfaced.
+    /// [`Error::Disconnected`] if the device closed the link or went silent,
+    /// or a transport error. Malformed frames are skipped rather than
+    /// surfaced.
     pub fn poll(&mut self) -> Result<Option<Event>> {
         if let Some(ev) = self.queue.pop_front() {
             return Ok(Some(ev));
@@ -289,16 +313,26 @@ impl<T: Transport> Client<T> {
         if self.last_heartbeat.elapsed() >= self.heartbeat_interval {
             self.send(Command::Heartbeat)?;
             self.last_heartbeat = Instant::now();
+            self.unanswered = self.unanswered.saturating_add(1);
         }
 
         let mut buf = [0u8; 64];
         let n = match self.transport.read(&mut buf) {
             Ok(0) => return Err(Error::Disconnected),
             Ok(n) => n,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if self.unanswered >= UNANSWERED_HEARTBEATS
+                    && self.last_data.elapsed() >= self.link_timeout
+                {
+                    return Err(Error::Disconnected);
+                }
+                return Ok(None);
+            }
             Err(e) => return Err(e.into()),
         };
         let data = &buf[..n];
+        self.last_data = Instant::now();
+        self.unanswered = 0;
 
         // The device sends every notification twice, byte-identical. Without
         // this every shot would be reported twice.
@@ -342,6 +376,9 @@ impl<T: Transport> Client<T> {
         self.send(Command::Query)?;
         self.last_heartbeat = Instant::now();
         self.send(Command::Heartbeat)?;
+        // The link watchdog starts now.
+        self.last_data = Instant::now();
+        self.unanswered = 1;
         Ok(Event::Connected {
             firmware: Firmware::parse(&String::from_utf8_lossy(&fw)),
             hardware: String::from_utf8_lossy(&hw).into_owned(),
@@ -403,13 +440,18 @@ mod tests {
     struct Mock {
         incoming: VecDeque<Vec<u8>>,
         pub written: Vec<Vec<u8>>,
+        /// Answer every heartbeat with an ack, as the device does.
+        acks_heartbeats: bool,
+        /// Acks not yet readable. They land after one empty read, modelling
+        /// link latency.
+        in_flight: Vec<Vec<u8>>,
     }
 
     impl Mock {
         fn with(frames: &[&str]) -> Self {
             Mock {
                 incoming: frames.iter().map(|f| hex(f)).collect(),
-                written: Vec::new(),
+                ..Mock::default()
             }
         }
     }
@@ -423,15 +465,20 @@ mod tests {
 
     impl Transport for Mock {
         fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-            match self.incoming.pop_front() {
-                Some(v) => {
-                    buf[..v.len()].copy_from_slice(&v);
-                    Ok(v.len())
-                }
-                None => Err(io::Error::new(io::ErrorKind::WouldBlock, "empty")),
+            if let Some(v) = self.incoming.pop_front() {
+                buf[..v.len()].copy_from_slice(&v);
+                Ok(v.len())
+            } else {
+                self.incoming.extend(self.in_flight.drain(..));
+                Err(io::Error::new(io::ErrorKind::WouldBlock, "empty"))
             }
         }
         fn write(&mut self, data: &[u8]) -> io::Result<()> {
+            if self.acks_heartbeats && data[1] == 0x83 {
+                // Twice, byte-identical, as the device sends everything.
+                self.in_flight.push(hex("110316030300000000"));
+                self.in_flight.push(hex("110316030300000000"));
+            }
             self.written.push(data.to_vec());
             Ok(())
         }
@@ -575,6 +622,64 @@ mod tests {
         let club_at = sent.iter().position(|&t| t == 0x82).expect("club select");
         let detect_at = sent.iter().position(|&t| t == 0x81).expect("detect ball");
         assert!(club_at < detect_at, "club must be selected before arming");
+    }
+
+    /// Poll for `span`, returning the first error.
+    fn poll_for<T: Transport>(c: &mut Client<T>, span: Duration) -> Option<Error> {
+        let end = Instant::now() + span;
+        while Instant::now() < end {
+            if let Err(e) = c.poll() {
+                return Some(e);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        None
+    }
+
+    /// A client with a heartbeat and link timeout short enough to test.
+    fn fast_client(mock: Mock) -> Client<Mock> {
+        let mut c = Client::new(mock);
+        c.heartbeat_interval = Duration::from_millis(10);
+        c.link_timeout = Duration::from_millis(30);
+        c
+    }
+
+    #[test]
+    fn silent_link_is_reported_disconnected() {
+        let mut c = fast_client(Mock::with(&[]));
+        let err = poll_for(&mut c, Duration::from_millis(500));
+        assert!(
+            matches!(err, Some(Error::Disconnected)),
+            "expected the watchdog to trip, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn acknowledged_heartbeats_keep_the_link_alive() {
+        let mut c = fast_client(Mock {
+            acks_heartbeats: true,
+            ..Mock::default()
+        });
+        let err = poll_for(&mut c, Duration::from_millis(300));
+        assert!(err.is_none(), "watchdog tripped on a live link: {err:?}");
+        assert!(
+            c.transport_mut().written.len() > 10,
+            "expected regular heartbeats"
+        );
+    }
+
+    #[test]
+    fn a_pause_in_polling_is_not_a_dead_link() {
+        // A caller that stops polling also stops heartbeats. The silence that
+        // causes must not count against the device.
+        let mut c = fast_client(Mock {
+            acks_heartbeats: true,
+            ..Mock::default()
+        });
+        assert!(poll_for(&mut c, Duration::from_millis(20)).is_none());
+        std::thread::sleep(Duration::from_millis(100));
+        let err = poll_for(&mut c, Duration::from_millis(100));
+        assert!(err.is_none(), "watchdog tripped after a pause: {err:?}");
     }
 
     #[test]

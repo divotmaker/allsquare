@@ -66,6 +66,10 @@ fn backend<E: std::fmt::Display>(e: E) -> Error {
 impl BluezTransport {
     /// Scan for a Square Golf device and connect to it.
     ///
+    /// Pass `address` to select a specific device — its BLE address or its
+    /// advertised name, e.g. `SquareGolf(54E4)`, ignoring case — or `None` to
+    /// take the first one advertising the `SquareGolf` name prefix.
+    ///
     /// # Errors
     /// [`Error::NotFound`] if nothing appears within the scan window, or
     /// [`Error::Backend`] for D-Bus/BlueZ failures.
@@ -224,7 +228,7 @@ impl BluezTransport {
                 .and_then(|v| String::try_from(v.clone()).ok())
                 .unwrap_or_default();
             let matched = match address {
-                Some(want) => addr.eq_ignore_ascii_case(want),
+                Some(want) => crate::ble::matches_pin(want, &addr, &name),
                 None => name.starts_with(NAME_PREFIX),
             };
             if matched {
@@ -307,7 +311,8 @@ impl BluezTransport {
     /// BLE address of the connected device, e.g. `DC:0D:30:62:54:E4`.
     ///
     /// Useful for pinning a specific device in config once it has been found
-    /// by auto-discovery.
+    /// by auto-discovery. The advertised [`name`](Self::name) also pins it, and
+    /// is the same on every OS.
     #[must_use]
     pub fn address(&self) -> &str {
         &self.address
