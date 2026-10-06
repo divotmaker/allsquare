@@ -42,6 +42,23 @@ pub mod uuid {
 /// Name prefix advertised by both the Home and the Omni.
 pub const NAME_PREFIX: &str = "SquareGolf";
 
+/// The advertised Square Golf name within a name reported by the BLE stack.
+///
+/// Returns `None` if the name does not belong to a Square Golf device.
+///
+/// Most stacks report the advertised name as-is, e.g. `SquareGolf(54E4)`.
+/// macOS reports a device it has connected to before as
+/// `"<cached GAP name> [<advertised name>]"`, e.g. `SGO300A [SquareGolf(54E4)]`,
+/// because the Omni's GAP name differs from its advertised name.
+#[must_use]
+pub fn advertised_name(reported: &str) -> Option<&str> {
+    let advertised = reported
+        .strip_suffix(']')
+        .and_then(|s| s.rsplit_once(" ["))
+        .map_or(reported, |(_, adv)| adv);
+    advertised.starts_with(NAME_PREFIX).then_some(advertised)
+}
+
 /// Every command is exactly this long.
 pub const COMMAND_LEN: usize = 9;
 
@@ -469,6 +486,31 @@ fn parse_11(data: &[u8]) -> Result<Notification> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn advertised_name_plain() {
+        assert_eq!(
+            advertised_name("SquareGolf(54E4)"),
+            Some("SquareGolf(54E4)")
+        );
+        assert_eq!(advertised_name("SquareGolf-1234"), Some("SquareGolf-1234"));
+    }
+
+    #[test]
+    fn advertised_name_macos_cached_gap_name() {
+        assert_eq!(
+            advertised_name("SGO300A [SquareGolf(54E4)]"),
+            Some("SquareGolf(54E4)")
+        );
+    }
+
+    #[test]
+    fn advertised_name_rejects_other_devices() {
+        assert_eq!(advertised_name(""), None);
+        assert_eq!(advertised_name("SGO300A"), None);
+        assert_eq!(advertised_name("AirPods [Headphones]"), None);
+        assert_eq!(advertised_name("Speaker [SquareGolf"), None);
+    }
 
     fn hex(s: &str) -> Vec<u8> {
         (0..s.len())

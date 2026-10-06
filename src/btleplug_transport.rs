@@ -12,7 +12,7 @@ use std::io;
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter, WriteType};
+use btleplug::api::{BDAddr, Central, Manager as _, Peripheral as _, ScanFilter, WriteType};
 use btleplug::platform::{Manager, Peripheral};
 use futures::StreamExt;
 use tokio::runtime::Runtime;
@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 use crate::client::Transport;
 use crate::error::{Error, Result};
-use crate::protocol::{NAME_PREFIX, uuid as ids};
+use crate::protocol::{advertised_name, uuid as ids};
 
 /// How long to scan before giving up.
 const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
@@ -40,9 +40,10 @@ pub struct BtleplugTransport {
 impl BtleplugTransport {
     /// Scan for a Square Golf device and connect to it.
     ///
-    /// Pass `address` to select a specific device, or `None` to take the first
-    /// one advertising the `SquareGolf` name prefix. **No pairing is performed
-    /// or required.**
+    /// Pass `address` to select a specific device (a value previously returned
+    /// by [`address`](Self::address)), or `None` to take the first one
+    /// advertising the `SquareGolf` name prefix. **No pairing is performed or
+    /// required.**
     ///
     /// # Errors
     /// [`Error::NotFound`] if no device appears within the scan window, or
@@ -130,13 +131,20 @@ impl BtleplugTransport {
                 let Ok(Some(props)) = p.properties().await else {
                     continue;
                 };
-                let name = props.local_name.unwrap_or_default();
+                let reported = props.local_name.unwrap_or_default();
+                let name = advertised_name(&reported).unwrap_or(&reported).to_string();
+                // macOS hides the MAC address and reports all zeros; the
+                // peripheral identifier (a UUID there) is the stable handle.
+                let addr = if props.address == BDAddr::default() {
+                    p.id().to_string()
+                } else {
+                    props.address.to_string()
+                };
                 let matched = match address {
-                    Some(want) => props.address.to_string().eq_ignore_ascii_case(want),
-                    None => name.starts_with(NAME_PREFIX),
+                    Some(want) => addr.eq_ignore_ascii_case(want),
+                    None => advertised_name(&reported).is_some(),
                 };
                 if matched {
-                    let addr = props.address.to_string();
                     found = Some((p, name, addr));
                     break;
                 }
@@ -152,7 +160,8 @@ impl BtleplugTransport {
         &self.name
     }
 
-    /// BLE address of the connected device.
+    /// Identifier of the connected device: the BLE address, or on macOS (which
+    /// does not expose addresses) the peripheral UUID.
     ///
     /// Useful for pinning a specific device in config once it has been found
     /// by auto-discovery.
