@@ -162,6 +162,16 @@ async fn op<T>(
     }
 }
 
+/// Block on a future with a time limit. The timer must be created inside the
+/// runtime: a Tokio timer created outside one panics ("no reactor running").
+fn block_on_timeout<F: Future>(
+    runtime: &Runtime,
+    limit: Duration,
+    fut: F,
+) -> std::result::Result<F::Output, tokio::time::error::Elapsed> {
+    runtime.block_on(async { timeout(limit, fut).await })
+}
+
 /// Best-effort disconnect, ignoring the outcome.
 async fn release(peripheral: &Peripheral, limit: Duration) {
     let _ = timeout(limit, peripheral.disconnect()).await;
@@ -355,8 +365,7 @@ impl BtleplugTransport {
             return false;
         }
         matches!(
-            self.runtime
-                .block_on(timeout(OP_TIMEOUT, self.peripheral.is_connected())),
+            block_on_timeout(self.runtime, OP_TIMEOUT, self.peripheral.is_connected()),
             Ok(Ok(true))
         )
     }
@@ -409,7 +418,7 @@ impl BtleplugTransport {
         name: &str,
         fut: impl Future<Output = btleplug::Result<T>>,
     ) -> io::Result<T> {
-        match self.runtime.block_on(timeout(OP_TIMEOUT, fut)) {
+        match block_on_timeout(self.runtime, OP_TIMEOUT, fut) {
             Ok(Ok(v)) => Ok(v),
             Ok(Err(e)) => Err(io::Error::other(format!("{name}: {e}"))),
             Err(_) => Err(io::Error::new(
@@ -624,5 +633,32 @@ async fn pump(
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: called from a plain thread, as the sync API is, the timer
+    // must not be built outside the runtime.
+    #[test]
+    fn block_on_timeout_outside_runtime_context() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        assert_eq!(
+            block_on_timeout(&runtime, OP_TIMEOUT, ready(7)).ok(),
+            Some(7)
+        );
+        assert!(
+            block_on_timeout(
+                &runtime,
+                Duration::from_millis(10),
+                std::future::pending::<()>()
+            )
+            .is_err()
+        );
     }
 }
