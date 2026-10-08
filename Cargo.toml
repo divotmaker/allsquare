@@ -36,6 +36,10 @@ serde = ["dep:serde"]
 bluez = ["dep:zbus"]
 frp = ["dep:flightrelay"]
 btleplug = ["dep:btleplug", "dep:tokio", "dep:futures", "dep:uuid"]
+# Temporary, for mapping the Omni's impact location to a reference launch
+# monitor (divotmaker/allsquare#1): report impact as the unscaled wire values,
+# with the device's signs, labelled millimetres.
+raw-face-impact = []
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

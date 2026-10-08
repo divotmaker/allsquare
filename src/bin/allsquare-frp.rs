@@ -25,7 +25,7 @@ use std::thread;
 use std::time::Duration;
 
 use allsquare::frp::FrpDevice;
-use allsquare::{Client, Club, Event, SpinMode, ble};
+use allsquare::{Client, Club, ClubMetrics, Event, SpinMode, ble};
 
 fn club_from_arg(arg: Option<&str>) -> Club {
     match arg.unwrap_or("7i") {
@@ -44,6 +44,29 @@ fn club_from_arg(arg: Option<&str>) -> Club {
         "lw" => Club::LobWedge,
         "putter" | "pt" => Club::Putter,
         _ => Club::Iron7,
+    }
+}
+
+/// Format an optional club metric, `-` when the device did not track it.
+fn fmt(v: Option<f64>) -> String {
+    v.map_or_else(|| "-".to_string(), |v| format!("{v:.2}"))
+}
+
+/// Format the impact location: unscaled wire values with `raw-face-impact`.
+fn fmt_impact(c: &ClubMetrics) -> String {
+    if cfg!(feature = "raw-face-impact") {
+        let raw = |v: Option<f64>| v.map_or_else(|| "-".to_string(), |v| format!("{v:.0}"));
+        format!(
+            "impact raw H {} / V {}",
+            raw(c.impact_horizontal),
+            raw(c.impact_vertical)
+        )
+    } else {
+        format!(
+            "impact H {} mm / V {} mm (uncalibrated)",
+            fmt(c.impact_horizontal),
+            fmt(c.impact_vertical)
+        )
     }
 }
 
@@ -112,6 +135,18 @@ fn main() -> ExitCode {
                             ball.total_spin,
                             if c.is_some() { "" } else { " (no club data)" }
                         );
+                        if let Some(c) = c {
+                            eprintln!(
+                                "allsquare-frp:   club {} m/s, path {}°, face {}°, attack {}°, \
+                                 loft {}°, {}",
+                                fmt(c.club_speed),
+                                fmt(c.path),
+                                fmt(c.face_angle),
+                                fmt(c.attack_angle),
+                                fmt(c.dynamic_loft),
+                                fmt_impact(c),
+                            );
+                        }
                     }
                     Event::StateChanged(s) => eprintln!("allsquare-frp: state {s:?}"),
                     _ => {}

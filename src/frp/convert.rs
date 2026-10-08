@@ -68,13 +68,23 @@ pub fn club_data(c: &ClubMetrics) -> FrpClubData {
 /// device's scale but it has **not** been checked against a reference launch
 /// monitor, and zero is *assumed* to be face centre. If that turns out wrong,
 /// this is the single place to fix it.
+///
+/// With the `raw-face-impact` feature, both values are the unscaled wire
+/// values with the device's signs, labelled millimetres.
 #[must_use]
 pub fn face_impact(c: &ClubMetrics) -> Option<FaceImpact> {
     if c.impact_horizontal.is_none() && c.impact_vertical.is_none() {
         return None;
     }
+    let lateral_sign = if cfg!(feature = "raw-face-impact") {
+        1.0
+    } else {
+        -1.0
+    };
     Some(FaceImpact {
-        lateral: c.impact_horizontal.map(|v| Distance::Millimeters(-v)),
+        lateral: c
+            .impact_horizontal
+            .map(|v| Distance::Millimeters(lateral_sign * v)),
         vertical: c.impact_vertical.map(Distance::Millimeters),
     })
 }
@@ -142,6 +152,7 @@ mod tests {
         assert_eq!(frp.club_height, None);
     }
 
+    #[cfg(not(feature = "raw-face-impact"))]
     #[test]
     fn face_impact_lateral_sign_is_inverted() {
         let (_, club) = tracked_chip();
@@ -150,6 +161,19 @@ mod tests {
         assert_eq!(impact.lateral, Some(Distance::Millimeters(32.19)));
         // Both agree that negative is below centre.
         assert_eq!(impact.vertical, Some(Distance::Millimeters(-17.43)));
+    }
+
+    #[cfg(feature = "raw-face-impact")]
+    #[test]
+    fn raw_face_impact_passes_through() {
+        let club = ClubMetrics {
+            impact_horizontal: Some(-3219.0),
+            impact_vertical: Some(-1743.0),
+            ..tracked_chip().1
+        };
+        let impact = face_impact(&club).expect("tracked shot has impact");
+        assert_eq!(impact.lateral, Some(Distance::Millimeters(-3219.0)));
+        assert_eq!(impact.vertical, Some(Distance::Millimeters(-1743.0)));
     }
 
     #[test]

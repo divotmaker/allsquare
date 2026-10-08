@@ -334,6 +334,7 @@ pub struct ClubMetrics {
     ///
     /// Scale is believed to be millimetres, and zero is *assumed* to be face
     /// centre; neither has been verified against a reference launch monitor.
+    /// With the `raw-face-impact` feature this is the unscaled wire value.
     pub impact_horizontal: Option<f64>,
     /// Vertical impact position. Negative is low on the face. Same caveats as
     /// [`Self::impact_horizontal`].
@@ -393,6 +394,17 @@ pub enum Notification {
 /// The sentinel a club field carries when the device has no value for it.
 const CLUB_SENTINEL: i16 = -1;
 
+/// Wire units per club field unit.
+const CLUB_SCALE: f64 = 100.0;
+
+/// Wire units per impact location unit. `raw-face-impact` leaves the wire
+/// value unscaled.
+const IMPACT_SCALE: f64 = if cfg!(feature = "raw-face-impact") {
+    1.0
+} else {
+    CLUB_SCALE
+};
+
 fn i16_at(b: &[u8], off: usize) -> i16 {
     i16::from_le_bytes([b[off], b[off + 1]])
 }
@@ -413,11 +425,11 @@ fn need(kind: &'static str, data: &[u8], n: usize) -> Result<()> {
 }
 
 /// Scale a club field, mapping the sentinel to `None`.
-fn club_field(raw: i16, mask: u8, bit: u8) -> Option<f64> {
+fn club_field(raw: i16, mask: u8, bit: u8, scale: f64) -> Option<f64> {
     if raw == CLUB_SENTINEL || mask & (1 << bit) == 0 {
         None
     } else {
-        Some(f64::from(raw) / 100.0)
+        Some(f64::from(raw) / scale)
     }
 }
 
@@ -493,20 +505,21 @@ fn parse_11(data: &[u8]) -> Result<Notification> {
             let body = &data[3..];
             // The Home answers "no data" with a bare 3-byte frame; the Omni
             // always sends all eight fields using sentinels. Handle both.
-            let get = |i: usize, bit: u8| -> Option<f64> {
+            let get_scaled = |i: usize, bit: u8, scale: f64| -> Option<f64> {
                 if body.len() < (i + 1) * 2 {
                     return None;
                 }
-                club_field(i16_at(body, i * 2), mask, bit)
+                club_field(i16_at(body, i * 2), mask, bit, scale)
             };
+            let get = |i: usize, bit: u8| get_scaled(i, bit, CLUB_SCALE);
             Ok(Notification::Club(ClubMetrics {
                 mask,
                 path: get(0, 0),
                 face_angle: get(1, 1),
                 attack_angle: get(2, 2),
                 dynamic_loft: get(3, 3),
-                impact_horizontal: get(4, 4),
-                impact_vertical: get(5, 5),
+                impact_horizontal: get_scaled(4, 4, IMPACT_SCALE),
+                impact_vertical: get_scaled(5, 5, IMPACT_SCALE),
                 club_speed: get(6, 6),
                 smash_factor: get(7, 7),
             }))
@@ -657,7 +670,12 @@ mod tests {
         assert!((c.path.expect("path") - 4.45).abs() < 1e-9);
         assert!((c.face_angle.expect("face") - 8.13).abs() < 1e-9);
         assert!((c.dynamic_loft.expect("loft") - 40.73).abs() < 1e-9);
-        assert!((c.impact_horizontal.expect("impact h") - -32.19).abs() < 1e-9);
+        let want_h = if cfg!(feature = "raw-face-impact") {
+            -3219.0
+        } else {
+            -32.19
+        };
+        assert!((c.impact_horizontal.expect("impact h") - want_h).abs() < 1e-9);
         assert!(!c.is_empty());
 
         // smash == ball speed / club speed is what pins both scalings.
