@@ -272,8 +272,11 @@ Impact location sign conventions, for a right-handed player:
 | `impactH` | toe | heel |
 | `impactV` | low on the face | high |
 
-The scale appears to be millimetres relative to face centre. This has not been
-validated against a reference launch monitor, and left-handed behaviour is
+Both are millimetres (÷100). `impactH` is relative to face centre. `impactV`
+is relative to the bottom edge of the club sticker's dot (to within about a
+millimetre), which sits above face centre by a club-dependent distance; the README's
+"Face impact (beta)" section lists allsquare's default offsets. Calibrated
+against a reference launch monitor on a small sample. Left-handed behaviour is
 unverified.
 
 ### 6.7 `0x91` — Battery

@@ -84,6 +84,7 @@
 pub mod client;
 pub mod club;
 pub mod error;
+pub mod impact;
 pub mod protocol;
 
 #[cfg(any(feature = "bluez", feature = "btleplug"))]
@@ -101,6 +102,7 @@ pub mod btleplug_transport;
 pub use client::{Client, Event, Firmware, Transport};
 pub use club::{Category, Club, Handed};
 pub use error::{Error, Result};
+pub use impact::ImpactCalibration;
 pub use protocol::{
     BallMetrics, ChargingState, ClubMetrics, Command, DeviceState, DistanceUnit, Notification,
     Sensor, SpeedUnit, SpinMode,

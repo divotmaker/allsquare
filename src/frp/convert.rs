@@ -64,10 +64,9 @@ pub fn club_data(c: &ClubMetrics) -> FrpClubData {
 /// the vendor app's own impact display for a right-handed player). `vertical`
 /// needs no adjustment — both call positive "above centre".
 ///
-/// Units are reported as millimetres. That is the best current reading of the
-/// device's scale but it has **not** been checked against a reference launch
-/// monitor, and zero is *assumed* to be face centre. If that turns out wrong,
-/// this is the single place to fix it.
+/// Both are millimetres from face centre (beta calibration; see
+/// [`ClubMetrics::impact_vertical`]). `vertical` may be `None` even when
+/// `lateral` is present.
 ///
 /// With the `raw-face-impact` feature, both values are the unscaled wire
 /// values with the device's signs, labelled millimetres.

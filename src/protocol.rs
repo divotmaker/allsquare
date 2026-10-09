@@ -330,14 +330,20 @@ pub struct ClubMetrics {
     pub attack_angle: Option<f64>,
     /// Dynamic loft, degrees.
     pub dynamic_loft: Option<f64>,
-    /// Horizontal impact position. Negative is toward the toe (right-handed).
-    ///
-    /// Scale is believed to be millimetres, and zero is *assumed* to be face
-    /// centre; neither has been verified against a reference launch monitor.
+    /// Horizontal impact position, millimetres from face centre. Negative is
+    /// toward the toe (right-handed). Beta: see the README "Units" section.
     /// With the `raw-face-impact` feature this is the unscaled wire value.
     pub impact_horizontal: Option<f64>,
-    /// Vertical impact position. Negative is low on the face. Same caveats as
-    /// [`Self::impact_horizontal`].
+    /// Vertical impact position. Negative is low on the face. Beta: see the
+    /// README "Units" section.
+    ///
+    /// As parsed, this is the device's reading, whose zero is the bottom edge
+    /// of the club sticker's dot. [`Client`](crate::Client) adds the armed
+    /// club's offset from its [`ImpactCalibration`](crate::ImpactCalibration),
+    /// so its shots carry millimetres from face centre, or `None` when no
+    /// estimate exists (the putter, or no club armed yet).
+    /// With the `raw-face-impact` feature it is the unscaled wire value and is
+    /// not offset.
     pub impact_vertical: Option<f64>,
     /// Club head speed, m/s.
     pub club_speed: Option<f64>,

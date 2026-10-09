@@ -8,7 +8,7 @@
 //! else is a bind address that controllers connect to.
 //!
 //! ```sh
-//! allsquare-frp                              # serve on 0.0.0.0:5880, 7-iron
+//! allsquare-frp                              # serve on 0.0.0.0:5880, driver
 //! allsquare-frp 0.0.0.0:5880 pw              # serve, explicit address and club
 //! allsquare-frp ws://flighthook:5880/frp pw  # bridge to flighthook
 //! ```
@@ -28,8 +28,8 @@ use allsquare::frp::FrpDevice;
 use allsquare::{Client, Club, ClubMetrics, Event, SpinMode, ble};
 
 fn club_from_arg(arg: Option<&str>) -> Club {
-    match arg.unwrap_or("7i") {
-        "driver" | "dr" => Club::Driver,
+    match arg.unwrap_or("driver") {
+        "7i" => Club::Iron7,
         "3w" => Club::Wood3,
         "3h" => Club::Hybrid3,
         "5h" => Club::Hybrid5,
@@ -43,7 +43,7 @@ fn club_from_arg(arg: Option<&str>) -> Club {
         "sw" => Club::SandWedge,
         "lw" => Club::LobWedge,
         "putter" | "pt" => Club::Putter,
-        _ => Club::Iron7,
+        _ => Club::Driver,
     }
 }
 
@@ -63,7 +63,7 @@ fn fmt_impact(c: &ClubMetrics) -> String {
         )
     } else {
         format!(
-            "impact H {} mm / V {} mm (uncalibrated)",
+            "impact H {} mm / V {} mm (beta)",
             fmt(c.impact_horizontal),
             fmt(c.impact_vertical)
         )

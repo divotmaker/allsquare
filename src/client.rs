@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::club::{Club, Handed};
 use crate::error::{Error, Result};
+use crate::impact::ImpactCalibration;
 use crate::protocol::{
     self, BallMetrics, ChargingState, ClubMetrics, Command, DeviceState, DistanceUnit,
     HEARTBEAT_SECS, Notification, Sensor, SpeedUnit, SpinMode,
@@ -176,6 +177,12 @@ pub struct Client<T: Transport> {
     /// against attributing a stale club packet to a shot we never saw.
     awaiting_club: bool,
     handed: Handed,
+    /// Club last successfully armed or selected, used to look up the per-club
+    /// vertical impact offset.
+    #[cfg_attr(feature = "raw-face-impact", allow(dead_code))]
+    active_club: Option<Club>,
+    #[cfg_attr(feature = "raw-face-impact", allow(dead_code))]
+    impact_calibration: ImpactCalibration,
 }
 
 impl<T: Transport> Client<T> {
@@ -196,7 +203,16 @@ impl<T: Transport> Client<T> {
             pending_shot: None,
             awaiting_club: false,
             handed: Handed::Right,
+            active_club: None,
+            impact_calibration: ImpactCalibration::default(),
         }
+    }
+
+    /// Set the per-club face impact calibration used to report vertical impact
+    /// as millimetres from face centre. Defaults to
+    /// [`ImpactCalibration::default`].
+    pub fn set_impact_calibration(&mut self, calibration: ImpactCalibration) {
+        self.impact_calibration = calibration;
     }
 
     /// Set player handedness, used by [`Self::select_club`].
@@ -228,6 +244,7 @@ impl<T: Transport> Client<T> {
             club,
             handed: self.handed,
         })?;
+        self.active_club = Some(club);
         self.send(Command::DetectBall { on: true, spin })
     }
 
@@ -250,7 +267,9 @@ impl<T: Transport> Client<T> {
         self.send(Command::SelectClub {
             club,
             handed: self.handed,
-        })
+        })?;
+        self.active_club = Some(club);
+        Ok(())
     }
 
     /// Set the units shown on the device's own display.
@@ -408,6 +427,16 @@ impl<T: Transport> Client<T> {
                 let Some(ball) = self.pending_shot.take() else {
                     return Ok(None);
                 };
+                #[cfg(not(feature = "raw-face-impact"))]
+                let club = {
+                    let mut club = club;
+                    apply_impact_vertical_offset(
+                        &mut club,
+                        self.active_club,
+                        &self.impact_calibration,
+                    );
+                    club
+                };
                 Ok(Some(Event::Shot {
                     ball,
                     club: if club.is_empty() { None } else { Some(club) },
@@ -427,6 +456,21 @@ impl<T: Transport> Client<T> {
             Notification::QueryResponse(_) => Ok(None),
         }
     }
+}
+
+/// Correct vertical impact location with the active club's offset, or clear
+/// it if no offset is known. Horizontal impact is left unchanged.
+#[cfg(not(feature = "raw-face-impact"))]
+fn apply_impact_vertical_offset(
+    club: &mut ClubMetrics,
+    active_club: Option<Club>,
+    calibration: &ImpactCalibration,
+) {
+    let offset = active_club.and_then(|c| calibration.dot_bottom_to_face_centre_mm(c));
+    club.impact_vertical = match offset {
+        Some(offset) => club.impact_vertical.map(|v| v + offset),
+        None => None,
+    };
 }
 
 #[cfg(test)]
@@ -593,6 +637,75 @@ mod tests {
             })
             .expect("a shot");
         assert!(club.is_none(), "all-sentinel club data should be None");
+    }
+
+    #[cfg(not(feature = "raw-face-impact"))]
+    #[test]
+    fn vertical_impact_is_offset_by_the_armed_club() {
+        let mut c = Client::new(Mock::with(&[
+            "110237a50039002e000000000000000000",
+            "1107ffbd012d03d600e90f6df331f946016500",
+        ]));
+        let _ = c.poll();
+        c.arm(Club::Iron8, SpinMode::Advanced).expect("arms");
+        let events = drain(&mut c);
+        let club = events
+            .iter()
+            .find_map(|e| match e {
+                Event::Shot { club, .. } => *club,
+                _ => None,
+            })
+            .expect("club metrics present");
+        // Wire H -32.19 is unchanged; wire V -17.43 gains the 8-iron's 19mm
+        // offset.
+        let want_h = -32.19;
+        let want_v = 1.57;
+        assert!((club.impact_horizontal.expect("h") - want_h).abs() < 1e-9);
+        assert!((club.impact_vertical.expect("v") - want_v).abs() < 1e-9);
+    }
+
+    #[cfg(not(feature = "raw-face-impact"))]
+    #[test]
+    fn putter_has_no_vertical_impact_estimate() {
+        let mut c = Client::new(Mock::with(&[
+            "110237a50039002e000000000000000000",
+            "1107ffbd012d03d600e90f6df331f946016500",
+        ]));
+        let _ = c.poll();
+        c.arm(Club::Putter, SpinMode::Advanced).expect("arms");
+        let events = drain(&mut c);
+        let club = events
+            .iter()
+            .find_map(|e| match e {
+                Event::Shot { club, .. } => *club,
+                _ => None,
+            })
+            .expect("club metrics present");
+        assert!(club.impact_vertical.is_none());
+    }
+
+    #[cfg(not(feature = "raw-face-impact"))]
+    #[test]
+    fn custom_impact_calibration_is_used() {
+        let mut c = Client::new(Mock::with(&[
+            "110237a50039002e000000000000000000",
+            "1107ffbd012d03d600e90f6df331f946016500",
+        ]));
+        let mut cal = ImpactCalibration::default();
+        cal.set_dot_bottom_to_face_centre_mm(Club::Iron8, Some(30.0));
+        c.set_impact_calibration(cal);
+        let _ = c.poll();
+        c.arm(Club::Iron8, SpinMode::Advanced).expect("arms");
+        let events = drain(&mut c);
+        let club = events
+            .iter()
+            .find_map(|e| match e {
+                Event::Shot { club, .. } => *club,
+                _ => None,
+            })
+            .expect("club metrics present");
+        // Wire V -17.43 + 30.0.
+        assert!((club.impact_vertical.expect("v") - 12.57).abs() < 1e-9);
     }
 
     #[test]

@@ -11,8 +11,8 @@ use std::time::Duration;
 use allsquare::{Client, Club, Event, SpinMode, ble};
 
 fn club_from_arg(arg: Option<&str>) -> Club {
-    match arg.unwrap_or("7i") {
-        "driver" | "dr" => Club::Driver,
+    match arg.unwrap_or("driver") {
+        "7i" => Club::Iron7,
         "3w" => Club::Wood3,
         "5h" => Club::Hybrid5,
         "4i" => Club::Iron4,
@@ -24,7 +24,7 @@ fn club_from_arg(arg: Option<&str>) -> Club {
         "gw" => Club::GapWedge,
         "sw" => Club::SandWedge,
         "putter" | "pt" => Club::Putter,
-        _ => Club::Iron7,
+        _ => Club::Driver,
     }
 }
 

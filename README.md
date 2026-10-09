@@ -162,6 +162,43 @@ cargo run --example monitor --features btleplug -- putter
 
 ## Units
 
-Speeds m/s, angles degrees, spin RPM. Impact location is negative toward the toe
-and negative low on the face; the scale is believed to be millimetres relative to
-face centre, but that has not been verified against a reference launch monitor.
+Speeds m/s, angles degrees, spin RPM. Impact location is millimetres from face
+centre, negative toward the toe and negative low on the face.
+
+### Face impact (beta)
+
+Impact location is calibrated against a reference launch monitor but still
+needs tuning; see
+[divotmaker/allsquare#1](https://github.com/divotmaker/allsquare/issues/1).
+
+Horizontal impact is reported as the device measures it. The device measures
+vertical impact from the bottom edge of the club sticker's dot, so `Client` adds
+the armed club's distance from the bottom of the dot down to face centre. Clubs
+differ in shape and size, so that distance is configurable per club with
+`ImpactCalibration` (`Client::set_impact_calibration`). The defaults:
+
+| Club | Dot bottom to face centre | Basis |
+|---|---|---|
+| Driver | 15 mm | fitted |
+| Fairway woods | 9 mm | driver fit − 6.5 mm (measured difference) |
+| Hybrids | 8 mm | fitted (4-hybrid) |
+| Irons, pitching wedge | 19 mm | fitted (8-iron) |
+| Gap and sand wedge | 21 mm | 8-iron fit + 2.5 mm (measured difference) |
+| Lob wedge | 24 mm | fitted |
+| Putter | — | none (vertical is `None`) |
+
+"Fitted" values come from shots against a reference launch monitor. The others
+add the measured difference in dot position to the nearest fitted club. All are
+rounded to whole millimetres, toward direct measurement of the clubs, since the
+calibration sample cannot support finer precision.
+
+Caveats:
+
+- Calibrated from a small sample of shots and one set of clubs.
+- The defaults assume the sticker is in its recommended spot, with the dot centre
+  about 5 mm below the top of the club. A sticker placed higher or lower shifts
+  vertical impact by the same amount, and other club models may differ: measure
+  from the bottom edge of the dot down to face centre on your own clubs and set
+  it.
+- Vertical impact needs the active club, so it is `None` until a club is armed.
+- Wedges are the least certain, especially horizontal impact on high-lofted wedges.
