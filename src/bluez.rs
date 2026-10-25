@@ -49,7 +49,7 @@ pub struct BluezTransport {
     device_path: OwnedObjectPath,
     cmd_path: OwnedObjectPath,
     name: String,
-    /// BLE address, e.g. `DC:0D:30:62:54:E4`.
+    /// BLE address, e.g. `02:00:00:AB:CD:01`.
     address: String,
     /// Advertised manufacturer payload, e.g. `0300A` — the only model
     /// identifier visible on Linux, since `BlueZ` hides the GAP service.
@@ -67,7 +67,7 @@ impl BluezTransport {
     /// Scan for a Square Golf device and connect to it.
     ///
     /// Pass `address` to select a specific device — its BLE address or its
-    /// advertised name, e.g. `SquareGolf(54E4)`, ignoring case — or `None` to
+    /// advertised name, e.g. `SquareGolf(CD01)`, ignoring case — or `None` to
     /// take the first one advertising the `SquareGolf` name prefix.
     ///
     /// # Errors
@@ -308,7 +308,7 @@ impl BluezTransport {
         &self.name
     }
 
-    /// BLE address of the connected device, e.g. `DC:0D:30:62:54:E4`.
+    /// BLE address of the connected device, e.g. `02:00:00:AB:CD:01`.
     ///
     /// Useful for pinning a specific device in config once it has been found
     /// by auto-discovery. The advertised [`name`](Self::name) also pins it, and

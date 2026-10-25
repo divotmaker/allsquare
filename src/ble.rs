@@ -26,7 +26,7 @@ pub type BleTransport = BtleplugTransport;
 ///
 /// A pinned value matches, case-insensitively, either the device's identifier
 /// (its BLE address, or on macOS the peripheral UUID) or its advertised name,
-/// e.g. `SquareGolf(54E4)`. The advertised name is the same on every OS, so it
+/// e.g. `SquareGolf(CD01)`. The advertised name is the same on every OS, so it
 /// is the portable way to pin a device.
 ///
 /// # Errors
@@ -43,7 +43,7 @@ pub fn connect(address: Option<&str>) -> Result<BleTransport> {
 ///
 /// A pinned value matches, case-insensitively, either the device's identifier
 /// (its BLE address, or on macOS the peripheral UUID) or its advertised name,
-/// e.g. `SquareGolf(54E4)`. The advertised name is the same on every OS, so it
+/// e.g. `SquareGolf(CD01)`. The advertised name is the same on every OS, so it
 /// is the portable way to pin a device.
 ///
 /// # Errors
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn pins_by_address_ignoring_case() {
-        assert!(matches_pin("dc:0d:30:62:54:e4", "DC:0D:30:62:54:E4", ""));
+        assert!(matches_pin("02:00:00:ab:cd:01", "02:00:00:AB:CD:01", ""));
         assert!(matches_pin(
             "5F1A3C9E-0B6D-4E52-9A41-7C3D2B1E8F60",
             "5f1a3c9e-0b6d-4e52-9a41-7c3d2b1e8f60",
@@ -83,20 +83,20 @@ mod tests {
 
     #[test]
     fn pins_by_advertised_name() {
-        assert!(matches_pin("SquareGolf(54E4)", "", "SquareGolf(54E4)"));
+        assert!(matches_pin("SquareGolf(CD01)", "", "SquareGolf(CD01)"));
         assert!(matches_pin(
-            "squaregolf(54e4)",
+            "squaregolf(cd01)",
             "",
-            "SGO300A [SquareGolf(54E4)]"
+            "SGO300A [SquareGolf(CD01)]"
         ));
     }
 
     #[test]
     fn rejects_other_devices() {
         assert!(!matches_pin(
-            "SquareGolf(54E4)",
-            "DC:0D:30:62:11:22",
-            "SquareGolf(1122)"
+            "SquareGolf(CD01)",
+            "02:00:00:AB:CD:02",
+            "SquareGolf(CD02)"
         ));
         // The GAP name is shared by every Omni, so it cannot pin one.
         assert!(!matches_pin("SGO300A", "", "SGO300A"));
@@ -105,13 +105,13 @@ mod tests {
 
     #[test]
     fn trims_the_pin() {
-        assert!(matches_pin(" SquareGolf(54E4)\n", "", "SquareGolf(54E4)"));
-        assert!(matches_pin("\tdc:0d:30:62:54:e4 ", "DC:0D:30:62:54:E4", ""));
+        assert!(matches_pin(" SquareGolf(CD01)\n", "", "SquareGolf(CD01)"));
+        assert!(matches_pin("\t02:00:00:ab:cd:01 ", "02:00:00:AB:CD:01", ""));
     }
 
     #[test]
     fn blank_pin_matches_nothing() {
         assert!(!matches_pin("   ", "", ""));
-        assert!(!matches_pin(" \t", "DC:0D:30:62:54:E4", "SquareGolf(54E4)"));
+        assert!(!matches_pin(" \t", "02:00:00:AB:CD:01", "SquareGolf(CD01)"));
     }
 }

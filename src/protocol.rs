@@ -46,9 +46,9 @@ pub const NAME_PREFIX: &str = "SquareGolf";
 ///
 /// Returns `None` if the name does not belong to a Square Golf device.
 ///
-/// Most stacks report the advertised name as-is, e.g. `SquareGolf(54E4)`.
+/// Most stacks report the advertised name as-is, e.g. `SquareGolf(CD01)`.
 /// macOS reports a device it has connected to before as
-/// `"<cached GAP name> [<advertised name>]"`, e.g. `SGO300A [SquareGolf(54E4)]`,
+/// `"<cached GAP name> [<advertised name>]"`, e.g. `SGO300A [SquareGolf(CD01)]`,
 /// because the Omni's GAP name differs from its advertised name.
 #[must_use]
 pub fn advertised_name(reported: &str) -> Option<&str> {
@@ -541,8 +541,8 @@ mod tests {
     #[test]
     fn advertised_name_plain() {
         assert_eq!(
-            advertised_name("SquareGolf(54E4)"),
-            Some("SquareGolf(54E4)")
+            advertised_name("SquareGolf(CD01)"),
+            Some("SquareGolf(CD01)")
         );
         assert_eq!(advertised_name("SquareGolf-1234"), Some("SquareGolf-1234"));
     }
@@ -550,8 +550,8 @@ mod tests {
     #[test]
     fn advertised_name_macos_cached_gap_name() {
         assert_eq!(
-            advertised_name("SGO300A [SquareGolf(54E4)]"),
-            Some("SquareGolf(54E4)")
+            advertised_name("SGO300A [SquareGolf(CD01)]"),
+            Some("SquareGolf(CD01)")
         );
     }
 
@@ -565,8 +565,8 @@ mod tests {
 
     #[test]
     fn matches_by_advertised_name() {
-        assert!(is_square_golf("SquareGolf(54E4)", []));
-        assert!(is_square_golf("SGO300A [SquareGolf(54E4)]", []));
+        assert!(is_square_golf("SquareGolf(CD01)", []));
+        assert!(is_square_golf("SGO300A [SquareGolf(CD01)]", []));
     }
 
     #[test]

@@ -250,7 +250,7 @@ impl BtleplugTransport {
     /// Pass `address` to select a specific device, or `None` to take the first
     /// Square Golf device found. A pinned value matches, ignoring case, either
     /// the device's [`address`](Self::address) or its advertised
-    /// [`name`](Self::name), e.g. `SquareGolf(54E4)`. The advertised name is
+    /// [`name`](Self::name), e.g. `SquareGolf(CD01)`. The advertised name is
     /// the same on every OS, so it is the portable way to pin a device. **No
     /// pairing is performed or required.**
     ///
@@ -338,7 +338,7 @@ impl BtleplugTransport {
         })
     }
 
-    /// Advertised name of the connected device, e.g. `SquareGolf(54E4)`.
+    /// Advertised name of the connected device, e.g. `SquareGolf(CD01)`.
     ///
     /// Falls back to the name the BLE stack reported if the advertised name
     /// was never seen.

@@ -157,7 +157,7 @@ impl FrpDevice {
         self.conn.is_some()
     }
 
-    /// Set the device name, e.g. `"SquareGolf(54E4)"`.
+    /// Set the device name, e.g. `"SquareGolf(CD01)"`.
     pub fn set_device_name(&mut self, name: &str) {
         name.clone_into(&mut self.device);
     }

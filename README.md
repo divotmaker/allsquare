@@ -135,7 +135,7 @@ BlueZ needs two workarounds, both applied automatically by the `bluez` backend:
 ### Pinning a device
 
 `ble::connect(None)` takes the first Square Golf device found. To pin one, pass
-its advertised name, e.g. `ble::connect(Some("SquareGolf(54E4)"))` — the name is
+its advertised name, e.g. `ble::connect(Some("SquareGolf(CD01)"))` — the name is
 the same on every OS. The BLE address also works, or on macOS, which hides
 addresses, the peripheral UUID. Matching ignores case.
 
