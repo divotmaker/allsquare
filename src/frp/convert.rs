@@ -7,53 +7,53 @@ use crate::protocol::{BallMetrics, ClubMetrics};
 
 /// Convert [`BallMetrics`] to an FRP [`BallFlight`].
 ///
-/// The device measures launch only — carry, total, roll, apex and flight time
-/// are computed by the vendor's app, not the hardware, so they stay `None`.
+/// The device measures launch only — carry, landing, total, roll, apex and
+/// flight time are computed by the vendor's app, not the hardware, so they stay
+/// `None`. It reports both spin pairs (backspin + sidespin, total + axis), and
+/// all four are sent. A total spin of 0, which the device reports for putts,
+/// sends neither total spin nor axis.
 ///
 /// Sign conventions:
 /// - `launch_azimuth` is "positive = right of target"; the device's `direction`
 ///   is already positive-right, so it passes through.
 /// - `sidespin_rpm` is "positive = curves rightward"; the device is the
 ///   opposite, so it is **negated**. Verified on course: without this, fades
-///   draw and draws fade downstream. The device's own `spin_axis` carries the
-///   same inverted polarity — it is left as measured on [`BallMetrics`] and is
-///   not forwarded, since FRP derives curvature from the spin components.
+///   draw and draws fade downstream.
+/// - `spin_axis` is "positive = tilted right, curves rightward"; the device's
+///   axis has the same inverted polarity as its sidespin, so it is **negated**
+///   too.
 #[must_use]
 pub fn ball_flight(b: &BallMetrics) -> BallFlight {
+    let spin_measured = b.total_spin > 0;
     BallFlight {
         launch_speed: Some(Velocity::MetersPerSecond(b.speed)),
         launch_azimuth: Some(b.direction),
         launch_elevation: Some(b.launch_angle),
-        carry_distance: None,
-        total_distance: None,
-        roll_distance: None,
-        max_height: None,
-        flight_time: None,
         backspin_rpm: Some(i32::from(b.back_spin)),
         sidespin_rpm: Some(-i32::from(b.side_spin)),
+        total_spin_rpm: spin_measured.then_some(i32::from(b.total_spin)),
+        spin_axis: spin_measured.then_some(-b.spin_axis),
+        ..BallFlight::default()
     }
 }
 
 /// Convert [`ClubMetrics`] to FRP [`ClubData`](FrpClubData).
 ///
 /// Every field is optional on both sides, so an untracked shot maps cleanly to
-/// all-`None`. Swing plane, post-impact club speed, and the club offset/height
-/// pair are not measured by this device — impact location is reported through
-/// [`face_impact`] instead, which is its proper home.
+/// all-`None`. Swing plane, post-impact club speed, spin loft, low point, and
+/// the club offset/height pair are not measured by this device — impact
+/// location is reported through [`face_impact`] instead, which is its proper
+/// home.
 #[must_use]
 pub fn club_data(c: &ClubMetrics) -> FrpClubData {
     FrpClubData {
         club_speed: c.club_speed.map(Velocity::MetersPerSecond),
-        club_speed_post: None,
         path: c.path,
         attack_angle: c.attack_angle,
         face_angle: c.face_angle,
         dynamic_loft: c.dynamic_loft,
         smash_factor: c.smash_factor,
-        swing_plane_horizontal: None,
-        swing_plane_vertical: None,
-        club_offset: None,
-        club_height: None,
+        ..FrpClubData::default()
     }
 }
 
@@ -129,10 +129,66 @@ mod tests {
         // Wire -87 (device: negative = curves right) -> FRP +87 (positive =
         // curves right). The sign is inverted, not passed through.
         assert_eq!(frp.sidespin_rpm, Some(87));
+        assert_eq!(frp.total_spin_rpm, Some(627));
+        // Wire -8.00 (device: negative = tilts right) -> FRP +8.0, the same
+        // sense as the negated sidespin.
+        assert_eq!(frp.spin_axis, Some(8.0));
         // Measured at launch only; the app computes the rest.
         assert_eq!(frp.carry_distance, None);
+        assert_eq!(frp.carry_offline, None);
         assert_eq!(frp.total_distance, None);
+        assert_eq!(frp.total_offline, None);
         assert_eq!(frp.flight_time, None);
+        assert_eq!(frp.descent_angle, None);
+    }
+
+    #[test]
+    fn spin_axis_and_sidespin_share_a_sign() {
+        let (ball, _) = tracked_chip();
+        // A draw for a right-hander: device sidespin and axis both positive.
+        let draw = BallMetrics {
+            spin_axis: 6.5,
+            side_spin: 340,
+            ..ball
+        };
+        let frp = ball_flight(&draw);
+        assert_eq!(frp.sidespin_rpm, Some(-340));
+        assert_eq!(frp.spin_axis, Some(-6.5));
+    }
+
+    #[test]
+    fn spin_pairs_agree() {
+        let (ball, _) = tracked_chip();
+        let frp = ball_flight(&ball);
+        let mut components = BallFlight {
+            backspin_rpm: frp.backspin_rpm,
+            sidespin_rpm: frp.sidespin_rpm,
+            ..BallFlight::default()
+        };
+        components.complete_spin();
+        assert_eq!(components.total_spin_rpm, frp.total_spin_rpm);
+        let axis = components.spin_axis.expect("axis");
+        assert!((axis - frp.spin_axis.expect("axis")).abs() < 0.1);
+    }
+
+    #[test]
+    fn zero_spin_sends_neither_total_nor_axis() {
+        // Captured 1.59 m/s putt: every spin field zero.
+        let putt = BallMetrics {
+            shot_type: 0x37,
+            speed: 1.59,
+            launch_angle: 0.72,
+            direction: -0.36,
+            total_spin: 0,
+            spin_axis: 0.0,
+            back_spin: 0,
+            side_spin: 0,
+        };
+        let frp = ball_flight(&putt);
+        assert_eq!(frp.total_spin_rpm, None);
+        assert_eq!(frp.spin_axis, None);
+        assert_eq!(frp.backspin_rpm, Some(0));
+        assert_eq!(frp.sidespin_rpm, Some(0));
     }
 
     #[test]
@@ -149,6 +205,9 @@ mod tests {
         // Impact goes to face_impact, not here.
         assert_eq!(frp.club_offset, None);
         assert_eq!(frp.club_height, None);
+        // Not measured by this device.
+        assert_eq!(frp.spin_loft, None);
+        assert_eq!(frp.low_point_distance, None);
     }
 
     #[cfg(not(feature = "raw-face-impact"))]
