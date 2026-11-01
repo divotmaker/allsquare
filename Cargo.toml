@@ -40,6 +40,12 @@ btleplug = ["dep:btleplug", "dep:tokio", "dep:futures", "dep:uuid"]
 # monitor (divotmaker/allsquare#1): report impact as the unscaled wire values,
 # with the device's signs, labelled millimetres.
 raw-face-impact = []
+# Notification fixtures and encoders (`allsquare::testing`) for tests of code
+# that consumes the device's notifications. Not for production use.
+testing = []
+
+[package.metadata.docs.rs]
+features = ["bluez", "frp", "serde", "testing"]
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

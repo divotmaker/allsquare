@@ -181,6 +181,20 @@ impl Command {
         }
     }
 
+    /// The command type byte of an encoded command frame, as written to the
+    /// device, or `None` when the frame is too short to carry one.
+    ///
+    /// Reads the byte [`encode`](Self::encode) places after the direction
+    /// byte; it does not check that the frame is a known command.
+    #[must_use]
+    pub const fn type_byte_of(frame: &[u8]) -> Option<u8> {
+        if frame.len() >= 2 {
+            Some(frame[1])
+        } else {
+            None
+        }
+    }
+
     /// Encode into the 9-byte wire form.
     #[must_use]
     pub fn encode(self, seq: u8) -> [u8; COMMAND_LEN] {
@@ -308,7 +322,7 @@ pub struct BallMetrics {
     /// right** (a fade for a right-hander), the same polarity the device uses
     /// for [`spin_axis`](Self::spin_axis). Consumers expecting the common
     /// "positive = rightward" convention (including FRP and `GSPro`) must negate
-    /// this; [`frp::ball_flight`](crate::frp::ball_flight) already does.
+    /// this; `frp::ball_flight` (with the `frp` feature) already does.
     pub side_spin: i16,
 }
 
@@ -398,14 +412,14 @@ pub enum Notification {
 }
 
 /// The sentinel a club field carries when the device has no value for it.
-const CLUB_SENTINEL: i16 = -1;
+pub(crate) const CLUB_SENTINEL: i16 = -1;
 
 /// Wire units per club field unit.
-const CLUB_SCALE: f64 = 100.0;
+pub(crate) const CLUB_SCALE: f64 = 100.0;
 
 /// Wire units per impact location unit. `raw-face-impact` leaves the wire
 /// value unscaled.
-const IMPACT_SCALE: f64 = if cfg!(feature = "raw-face-impact") {
+pub(crate) const IMPACT_SCALE: f64 = if cfg!(feature = "raw-face-impact") {
     1.0
 } else {
     CLUB_SCALE
@@ -603,6 +617,23 @@ mod tests {
     }
 
     #[test]
+    fn type_byte_of_reads_the_type_of_an_encoded_command() {
+        for cmd in [
+            Command::Heartbeat,
+            Command::Query,
+            Command::RequestClubMetrics,
+            Command::SetGreenSpeed(3),
+            Command::SetCarryAdjustment(90),
+        ] {
+            assert_eq!(Command::type_byte_of(&cmd.encode(7)), Some(cmd.type_byte()));
+        }
+        // A short frame still reports its type; anything under two bytes has none.
+        assert_eq!(Command::type_byte_of(&[0x00, 0x87, 0x01]), Some(0x87));
+        assert_eq!(Command::type_byte_of(&[0x00]), None);
+        assert_eq!(Command::type_byte_of(&[]), None);
+    }
+
+    #[test]
     fn commands_are_nine_bytes_and_zero_prefixed() {
         for cmd in [
             Command::Heartbeat,
@@ -652,8 +683,8 @@ mod tests {
     }
 
     #[test]
-    fn parses_a_real_putt() {
-        // Captured: 1.59 m/s putt.
+    fn parses_a_putt_as_the_device_sent_it() {
+        // A 1.59 m/s putt, as the device sent it.
         let n = parse(&hex("1102379f004800dcff0000000000000000")).expect("parses");
         let Notification::Ball(b) = n else {
             panic!("expected ball")
@@ -667,7 +698,7 @@ mod tests {
 
     #[test]
     fn parses_a_tracked_club_packet() {
-        // Captured wedge chip, mask 0xff, all eight fields valid.
+        // A wedge chip as the device sent it, mask 0xff, all eight fields valid.
         let n = parse(&hex("1107ffbd012d03d600e90f6df331f946016500")).expect("parses");
         let Notification::Club(c) = n else {
             panic!("expected club")

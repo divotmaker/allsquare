@@ -16,10 +16,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Clippy
-        run: cargo clippy --all-targets --features bluez,frp,serde -- -D warnings
+        run: cargo clippy --all-targets --features bluez,frp,serde,testing,raw-face-impact -- -D warnings
 
       - name: Run tests
-        run: cargo test --lib --features bluez,frp,serde
+        run: cargo test --features bluez,frp,serde,testing
 
       # btleplug ships for Windows/macOS; Linux uses the bluez backend. Check
       # it against the target it is actually built for — compiling it natively

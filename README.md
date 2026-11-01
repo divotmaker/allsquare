@@ -53,13 +53,15 @@ This project is an exercise of the interoperability exception under
 The Square Golf Omni uses a proprietary protocol over Bluetooth Low Energy to
 communicate shot data (ball speed, launch angle, spin, club data, impact
 location, etc.) to companion software. Invant does not publish this protocol or
-provide an SDK for third-party integration. The protocol was reverse-engineered
-from the researcher's own lawfully purchased hardware, solely to enable
-interoperability with third-party golf simulation software.
+provide an SDK for third-party integration. The protocol was worked out from
+the researcher's own lawfully purchased device and from analysis of the
+official Square Golf app, solely to enable interoperability with third-party
+golf simulation software.
 
-No Invant code is reproduced here. No access controls were circumvented — the
-device uses no pairing, bonding, or encryption of any kind, and all protocol
-data was captured from the researcher's own device.
+No Invant code is reproduced here; the protocol is described and implemented in
+our own words. No access controls were circumvented — the device uses no
+pairing, bonding, or encryption of any kind, and all protocol data was captured
+from the researcher's own device.
 
 ## Acceptable Use
 
@@ -152,6 +154,33 @@ addresses, the peripheral UUID. Matching ignores case.
   Privacy & Security › Bluetooth.
 - A powered-off adapter is reported as an error from `connect`, and the next
   `connect` retries.
+
+## Testing support
+
+The `testing` feature (off by default) adds `allsquare::testing`: notification
+fixtures and encoders for tests of code that consumes the device's
+notifications, so those tests do not spell wire bytes by hand. Enable it as a
+dev-dependency feature only:
+
+```toml
+[dev-dependencies]
+allsquare = { version = "0.2.1", features = ["testing"] }
+```
+
+- `BALL_NOTIFICATION`, `QUERY_RESPONSE`, `CLUB_NOTIFICATION_NO_DATA` — fixed
+  frames.
+- `ball_notification(&BallMetrics)`, `club_notification(&ClubMetrics)`,
+  `heartbeat_ack(DeviceState)`, `query_response(&[u8])` — encoders, each the
+  inverse of `protocol::parse`.
+- `TYPICAL_SHOT_TYPE` and `ball_metrics()` — the shot-type byte the Omni sends,
+  and a zeroed `BallMetrics` carrying it.
+
+The fixtures describe a synthetic device and carry no device identity.
+
+## Reading a command's type
+
+`Command::type_byte_of(&[u8])` reads the command type from an encoded command
+frame, for code that records or filters what a `Client` writes.
 
 ## Example
 

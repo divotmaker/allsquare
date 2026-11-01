@@ -70,6 +70,13 @@
 //! - **`0x11` is not a universal prefix.** `0x91` (battery) and `0x71` (clock)
 //!   arrive unprompted.
 //!
+//! # Testing
+//!
+//! The `testing` feature (off by default) adds `allsquare::testing`: byte-exact
+//! notification fixtures and encoders, so tests of code that consumes the
+//! device's notifications do not spell wire bytes by hand. Enable it as a
+//! dev-dependency feature only.
+//!
 //! # Units
 //!
 //! Speeds are m/s, angles degrees, spin RPM. The device's unit setting
@@ -98,6 +105,9 @@ pub mod frp;
 
 #[cfg(feature = "btleplug")]
 pub mod btleplug_transport;
+
+#[cfg(feature = "testing")]
+pub mod testing;
 
 pub use client::{Client, Event, Firmware, Transport};
 pub use club::{Category, Club, Handed};
