@@ -62,14 +62,14 @@ pub fn club_data(c: &ClubMetrics) -> FrpClubData {
 /// **The lateral sign is inverted.** FRP defines `lateral` as "positive =
 /// toward toe"; the device reports negative toward the toe (verified against
 /// the vendor app's own impact display for a right-handed player). `vertical`
-/// needs no adjustment — both call positive "above centre".
+/// needs no adjustment — both call positive "above center".
 ///
-/// Both are millimetres from face centre (beta calibration; see
+/// Both are millimeters from face center (beta calibration; see
 /// [`ClubMetrics::impact_vertical`]). `vertical` may be `None` even when
 /// `lateral` is present.
 ///
 /// With the `raw-face-impact` feature, both values are the unscaled wire
-/// values with the device's signs, labelled millimetres.
+/// values with the device's signs, labeled millimeters.
 #[must_use]
 pub fn face_impact(c: &ClubMetrics) -> Option<FaceImpact> {
     if c.impact_horizontal.is_none() && c.impact_vertical.is_none() {
@@ -217,7 +217,7 @@ mod tests {
         let impact = face_impact(&club).expect("tracked shot has impact");
         // Device says -32.19 = toe. FRP says positive = toe.
         assert_eq!(impact.lateral, Some(Distance::Millimeters(32.19)));
-        // Both agree that negative is below centre.
+        // Both agree that negative is below center.
         assert_eq!(impact.vertical, Some(Distance::Millimeters(-17.43)));
     }
 

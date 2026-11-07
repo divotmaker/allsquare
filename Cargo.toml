@@ -38,7 +38,7 @@ frp = ["dep:flightrelay"]
 btleplug = ["dep:btleplug", "dep:tokio", "dep:futures", "dep:uuid"]
 # Temporary, for mapping the Omni's impact location to a reference launch
 # monitor (divotmaker/allsquare#1): report impact as the unscaled wire values,
-# with the device's signs, labelled millimetres.
+# with the device's signs, labeled millimeters.
 raw-face-impact = []
 # Notification fixtures and encoders (`allsquare::testing`) for tests of code
 # that consumes the device's notifications. Not for production use.

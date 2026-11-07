@@ -53,7 +53,7 @@
 //!
 //! # Things that will bite you
 //!
-//! These are device behaviours, not API quirks, and [`Client`] handles all of
+//! These are device behaviors, not API quirks, and [`Client`] handles all of
 //! them — but they matter if you use [`protocol`] directly:
 //!
 //! - **Never pair or bond.** The device does neither, and OS pairing dialogs

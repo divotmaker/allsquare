@@ -110,7 +110,7 @@ pub enum SpinMode {
 /// Speed unit for the device's own display. Does not affect the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SpeedUnit {
-    /// Metres per second.
+    /// Meters per second.
     #[default]
     MetersPerSecond = 0,
     /// Miles per hour.
@@ -120,7 +120,7 @@ pub enum SpeedUnit {
 /// Distance unit for the device's own display. Does not affect the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DistanceUnit {
-    /// Metres.
+    /// Meters.
     #[default]
     Meter = 0,
     /// Yards for long distances, feet for short.
@@ -237,7 +237,7 @@ pub enum DeviceState {
     None,
     /// Idle.
     Idle,
-    /// Initialising.
+    /// Initializing.
     Init,
     /// Looking for a ball.
     Detect,
@@ -280,7 +280,7 @@ pub enum ChargingState {
     Full,
     /// No battery present.
     NoBattery,
-    /// Unrecognised value.
+    /// Unrecognized value.
     Unknown,
 }
 
@@ -344,7 +344,7 @@ pub struct ClubMetrics {
     pub attack_angle: Option<f64>,
     /// Dynamic loft, degrees.
     pub dynamic_loft: Option<f64>,
-    /// Horizontal impact position, millimetres from face centre. Negative is
+    /// Horizontal impact position, millimeters from face center. Negative is
     /// toward the toe (right-handed). Beta: see the README "Units" section.
     /// With the `raw-face-impact` feature this is the unscaled wire value.
     pub impact_horizontal: Option<f64>,
@@ -354,7 +354,7 @@ pub struct ClubMetrics {
     /// As parsed, this is the device's reading, whose zero is the bottom edge
     /// of the club sticker's dot. [`Client`](crate::Client) adds the armed
     /// club's offset from its [`ImpactCalibration`](crate::ImpactCalibration),
-    /// so its shots carry millimetres from face centre, or `None` when no
+    /// so its shots carry millimeters from face center, or `None` when no
     /// estimate exists (the putter, or no club armed yet).
     /// With the `raw-face-impact` feature it is the unscaled wire value and is
     /// not offset.

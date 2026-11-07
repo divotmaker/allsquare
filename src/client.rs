@@ -209,7 +209,7 @@ impl<T: Transport> Client<T> {
     }
 
     /// Set the per-club face impact calibration used to report vertical impact
-    /// as millimetres from face centre. Defaults to
+    /// as millimeters from face center. Defaults to
     /// [`ImpactCalibration::default`].
     pub fn set_impact_calibration(&mut self, calibration: ImpactCalibration) {
         self.impact_calibration = calibration;
@@ -365,7 +365,7 @@ impl<T: Transport> Client<T> {
             Ok(note) => self.handle(&note),
             Err(Error::Disconnected) => Err(Error::Disconnected),
             // Unknown or truncated frames are not fatal; the device emits
-            // families we have not characterised.
+            // families we have not characterized.
             Err(_) => Ok(None),
         }
     }
@@ -466,7 +466,7 @@ fn apply_impact_vertical_offset(
     active_club: Option<Club>,
     calibration: &ImpactCalibration,
 ) {
-    let offset = active_club.and_then(|c| calibration.dot_bottom_to_face_centre_mm(c));
+    let offset = active_club.and_then(|c| calibration.dot_bottom_to_face_center_mm(c));
     club.impact_vertical = match offset {
         Some(offset) => club.impact_vertical.map(|v| v + offset),
         None => None,
@@ -486,7 +486,7 @@ mod tests {
         pub written: Vec<Vec<u8>>,
         /// Answer every heartbeat with an ack, as the device does.
         acks_heartbeats: bool,
-        /// Acks not yet readable. They land after one empty read, modelling
+        /// Acks not yet readable. They land after one empty read, modeling
         /// link latency.
         in_flight: Vec<Vec<u8>>,
     }
@@ -692,7 +692,7 @@ mod tests {
             "1107ffbd012d03d600e90f6df331f946016500",
         ]));
         let mut cal = ImpactCalibration::default();
-        cal.set_dot_bottom_to_face_centre_mm(Club::Iron8, Some(30.0));
+        cal.set_dot_bottom_to_face_center_mm(Club::Iron8, Some(30.0));
         c.set_impact_calibration(cal);
         let _ = c.poll();
         c.arm(Club::Iron8, SpinMode::Advanced).expect("arms");

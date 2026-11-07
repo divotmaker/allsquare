@@ -164,7 +164,7 @@ fn state_byte(state: DeviceState) -> u8 {
     }
 }
 
-/// Encode a heartbeat acknowledgement (`0x11 0x03`, 9 bytes) carrying
+/// Encode a heartbeat acknowledgment (`0x11 0x03`, 9 bytes) carrying
 /// `state`.
 ///
 /// Bytes 2, 4 and 5 carry fixed values; `parse` ignores them (see `WIRE.md`

@@ -73,7 +73,7 @@ always reads `0`. Battery level arrives as a `0x91` notification instead (§6.7)
 ```
 
 `lm` is the launch monitor firmware — the version that governs protocol
-behaviour.
+behavior.
 
 ### ATT MTU
 
@@ -128,7 +128,7 @@ It is not per-type, and it does not echo the host's command sequence.
 | Club path, face, attack, dynamic loft | `i16` | ÷ 100 | degrees |
 | Total spin, backspin, sidespin | `i16` | raw | RPM |
 | Smash factor | `i16` | ÷ 100 | unitless |
-| Impact location | `i16` | ÷ 100 | millimetres (see §6.6) |
+| Impact location | `i16` | ÷ 100 | millimeters (see §6.6) |
 | Ball position | `i32` | raw | units undetermined |
 
 All signed integers are two's complement, little-endian.
@@ -181,7 +181,7 @@ These configure the device's own built-in display and **have no effect on the
 wire format**. Values transmitted are always m/s and native units regardless of
 the unit setting.
 
-- `0x88` SetUnits — speed `0` m/s, `1` mph; distance `0` metres, `1` yards/feet,
+- `0x88` SetUnits — speed `0` m/s, `1` mph; distance `0` meters, `1` yards/feet,
   `2` yards. Byte 3 is a third setting of unknown meaning; `0` is safe.
 - `0x89` SetGreenSpeed — `0`–`5`, mapping to stimp 8–13.
 - `0x8a` SetCarryAdjustment — a percentage, e.g. `100`.
@@ -234,10 +234,10 @@ equals `atan2(sidespin, backspin)` in its own signs. Direction (offset 7–8) is
 Carry, total distance, roll, apex and flight time are **not transmitted**. The
 device measures launch only; any flight model is the consumer's responsibility.
 
-### 6.3 `0x03` — Heartbeat acknowledgement
+### 6.3 `0x03` — Heartbeat acknowledgment
 
 9 bytes. Byte 3 carries the device state (§9). Bytes 4–5 are related state
-values that are not fully characterised.
+values that are not fully characterized.
 
 ### 6.4 `0x04` — Alignment
 
@@ -272,11 +272,11 @@ Impact location sign conventions, for a right-handed player:
 | `impactH` | toe | heel |
 | `impactV` | low on the face | high |
 
-Both are millimetres (÷100). `impactH` is relative to face centre. `impactV`
+Both are millimeters (÷100). `impactH` is relative to face center. `impactV`
 is relative to the bottom edge of the club sticker's dot (to within about a
-millimetre), which sits above face centre by a club-dependent distance; the README's
+millimeter), which sits above face center by a club-dependent distance; the README's
 "Face impact (beta)" section lists allsquare's default offsets. Calibrated
-against a reference launch monitor on a small sample. Left-handed behaviour is
+against a reference launch monitor on a small sample. Left-handed behavior is
 unverified.
 
 ### 6.7 `0x91` — Battery
@@ -348,13 +348,13 @@ scheme.
 
 ## 9. Device State
 
-Reported in byte 3 of every heartbeat acknowledgement.
+Reported in byte 3 of every heartbeat acknowledgment.
 
 | Value | State |
 |---|---|
 | `0` | none |
 | `1` | idle |
-| `2` | initialising |
+| `2` | initializing |
 | `3` | detecting |
 | `4` | ready — a ball is in position |
 | `5` | shot |
@@ -364,7 +364,7 @@ Reported in byte 3 of every heartbeat acknowledgement.
 
 ## 10. Implementation Requirements
 
-Four device behaviours will cause incorrect results if not handled.
+Four device behaviors will cause incorrect results if not handled.
 
 **Notifications are sent twice.** Every notification is transmitted twice,
 byte-identical. Deduplicate against the immediately preceding payload or every

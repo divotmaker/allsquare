@@ -108,7 +108,7 @@ Detailed specs live in [`docs/`](docs/):
 - **[WIRE.md](docs/WIRE.md)** — BLE GATT profile, packet format, command and
   notification catalog, data encoding, club codes, device states.
 - **[SEQUENCE.md](docs/SEQUENCE.md)** — Connection lifecycle, session
-  initialisation, arming, shot flow, platform notes, minimum viable client.
+  initialization, arming, shot flow, platform notes, minimum viable client.
 
 ## Things the device does that will surprise you
 
@@ -194,8 +194,8 @@ cargo run --example monitor --features btleplug -- putter
 
 ## Units
 
-Speeds m/s, angles degrees, spin RPM. Impact location is millimetres from face
-centre, negative toward the toe and negative low on the face.
+Speeds m/s, angles degrees, spin RPM. Impact location is millimeters from face
+center, negative toward the toe and negative low on the face.
 
 ### Face impact (beta)
 
@@ -205,11 +205,11 @@ needs tuning; see
 
 Horizontal impact is reported as the device measures it. The device measures
 vertical impact from the bottom edge of the club sticker's dot, so `Client` adds
-the armed club's distance from the bottom of the dot down to face centre. Clubs
+the armed club's distance from the bottom of the dot down to face center. Clubs
 differ in shape and size, so that distance is configurable per club with
 `ImpactCalibration` (`Client::set_impact_calibration`). The defaults:
 
-| Club | Dot bottom to face centre | Basis |
+| Club | Dot bottom to face center | Basis |
 |---|---|---|
 | Driver | 15 mm | fitted |
 | Fairway woods | 9 mm | driver fit − 6.5 mm (measured difference) |
@@ -221,16 +221,16 @@ differ in shape and size, so that distance is configurable per club with
 
 "Fitted" values come from shots against a reference launch monitor. The others
 add the measured difference in dot position to the nearest fitted club. All are
-rounded to whole millimetres, toward direct measurement of the clubs, since the
+rounded to whole millimeters, toward direct measurement of the clubs, since the
 calibration sample cannot support finer precision.
 
 Caveats:
 
 - Calibrated from a small sample of shots and one set of clubs.
-- The defaults assume the sticker is in its recommended spot, with the dot centre
+- The defaults assume the sticker is in its recommended spot, with the dot center
   about 5 mm below the top of the club. A sticker placed higher or lower shifts
   vertical impact by the same amount, and other club models may differ: measure
-  from the bottom edge of the dot down to face centre on your own clubs and set
+  from the bottom edge of the dot down to face center on your own clubs and set
   it.
 - Vertical impact needs the active club, so it is `None` until a club is armed.
 - Wedges are the least certain, especially horizontal impact on high-lofted wedges.

@@ -23,7 +23,7 @@ pub enum Error {
     #[error("unknown message family 0x{0:02x}")]
     UnknownFamily(u8),
 
-    /// A `0x11`-family notification with an unrecognised type byte.
+    /// A `0x11`-family notification with an unrecognized type byte.
     #[error("unknown notification type 0x{0:02x}")]
     UnknownNotification(u8),
 

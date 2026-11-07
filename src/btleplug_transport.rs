@@ -75,8 +75,8 @@ const INIT_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Limit for every other BLE operation.
 const OP_TIMEOUT: Duration = Duration::from_secs(5);
-/// Limit for cancelling a connect that failed. The OS may never confirm
-/// cancelling a peripheral that never connected.
+/// Limit for canceling a connect that failed. The OS may never confirm
+/// canceling a peripheral that never connected.
 const CANCEL_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long a scan match without its advertised name waits for one.
 const NAME_WAIT: Duration = Duration::from_secs(2);
@@ -370,7 +370,7 @@ impl BtleplugTransport {
         )
     }
 
-    /// Disconnect. Calling it again, or dropping the transport afterwards, is
+    /// Disconnect. Calling it again, or dropping the transport afterward, is
     /// harmless.
     ///
     /// # Errors

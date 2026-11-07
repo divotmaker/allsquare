@@ -98,14 +98,14 @@ completes the transaction.
 
 ---
 
-## 4. Session Initialisation
+## 4. Session Initialization
 
 ```
 0x86  Query                 → 0x06 response
 0x88  SetUnits
 0x8a  SetCarryAdjustment
 0x89  SetGreenSpeed
-0x83  Heartbeat             → 0x03 acknowledgement, every 5 s thereafter
+0x83  Heartbeat             → 0x03 acknowledgment, every 5 s thereafter
 ```
 
 The three setters configure the device's built-in display only and do not change
