@@ -45,14 +45,14 @@ use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use btleplug::api::{
     BDAddr, Central, CentralEvent, CentralState, Characteristic, Manager as _, Peripheral as _,
     ScanFilter, ValueNotification, WriteType,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral};
-use futures::future::ready;
+use futures::future::{self, Either, ready};
 use futures::stream::{self, BoxStream, StreamExt};
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
@@ -85,6 +85,8 @@ const NAME_POLL: Duration = Duration::from_millis(200);
 /// How long an adapter reporting an unknown power state gets to settle before
 /// scanning anyway. The state is briefly unknown right after start-up.
 const STATE_GRACE: Duration = Duration::from_secs(2);
+/// How often a cancelable wait looks at its cancel flag.
+const CANCEL_POLL: Duration = Duration::from_millis(100);
 
 /// The process-wide runtime. Created on first use and never dropped: every
 /// adapter's background tasks run on it.
@@ -177,6 +179,22 @@ async fn release(peripheral: &Peripheral, limit: Duration) {
     let _ = timeout(limit, peripheral.disconnect()).await;
 }
 
+/// `fut`'s output, or `None` once `cancel` is set. The flag is checked every
+/// [`CANCEL_POLL`]; `fut` is dropped unfinished on a cancel.
+async fn unless_canceled<F: Future>(cancel: &AtomicBool, fut: F) -> Option<F::Output> {
+    let watch = async {
+        while !cancel.load(Ordering::Acquire) {
+            tokio::time::sleep(CANCEL_POLL).await;
+        }
+    };
+    let fut = std::pin::pin!(fut);
+    let watch = std::pin::pin!(watch);
+    match future::select(fut, watch).await {
+        Either::Left((output, _)) => Some(output),
+        Either::Right(((), _)) => None,
+    }
+}
+
 /// Link state shared with the notification pump.
 #[derive(Default)]
 struct Link {
@@ -235,11 +253,16 @@ pub struct BtleplugTransport {
     /// alone. Kept alive for the pump's adapter events and for disconnecting.
     _adapter: Adapter,
     peripheral: Peripheral,
-    notifications: Receiver<Vec<u8>>,
+    /// Notification payloads from the pump, with when each arrived.
+    notifications: Receiver<(Vec<u8>, SystemTime)>,
+    /// When the notification [`Transport::read`] last returned arrived.
+    received: Option<SystemTime>,
     link: Arc<Link>,
     pump: JoinHandle<()>,
     /// [`disconnect`](Self::disconnect) succeeded.
     closed: bool,
+    /// Ends blocking I/O early when set; see [`set_cancel`](Self::set_cancel).
+    cancel: Option<Arc<AtomicBool>>,
     name: String,
     address: String,
 }
@@ -263,15 +286,34 @@ impl BtleplugTransport {
     /// [`Error::Backend`] for BLE stack failures, including no adapter,
     /// Bluetooth permission denied, Bluetooth powered off, and timeouts.
     pub fn connect(address: Option<&str>) -> Result<Self> {
+        Self::connect_cancelable(address, &AtomicBool::new(false))?
+            .ok_or_else(|| Error::Backend("connect canceled".into()))
+    }
+
+    /// [`connect`](Self::connect), giving up when `cancel` is set: `Ok(None)`.
+    ///
+    /// Every wait (the scan, the connect, service discovery and the
+    /// subscription) looks at `cancel` every 100 ms. A cancel during the scan
+    /// stops it; a cancel once the connect request has gone out disconnects
+    /// the device, so a connection that completes late does not hold it.
+    ///
+    /// # Errors
+    /// As [`connect`](Self::connect).
+    pub fn connect_cancelable(address: Option<&str>, cancel: &AtomicBool) -> Result<Option<Self>> {
         let runtime = runtime()?;
         let adapter = take_scanner(runtime)?;
-        let found = match runtime.block_on(find(&adapter, address)) {
-            Ok(found) => found,
-            Err(ScanFailure { error, reusable }) => {
+        let found = match runtime.block_on(unless_canceled(cancel, find(&adapter, address))) {
+            Some(Ok(found)) => found,
+            Some(Err(ScanFailure { error, reusable })) => {
                 if reusable {
                     park(adapter);
                 }
                 return Err(error);
+            }
+            None => {
+                let _ = block_on_timeout(runtime, OP_TIMEOUT, adapter.stop_scan());
+                park(adapter);
+                return Ok(None);
             }
         };
         let peripheral = found.peripheral;
@@ -283,16 +325,28 @@ impl BtleplugTransport {
 
             // Never connect straight out of a scan callback.
             tokio::time::sleep(SETTLE).await;
-            if let Err(e) = op("connect", CONNECT_TIMEOUT, peripheral.connect()).await {
-                // Also cancels a connection attempt still pending in the OS,
-                // which would otherwise complete later and hold the device.
-                release(&peripheral, CANCEL_TIMEOUT).await;
-                return Err(e);
+            let connect = op("connect", CONNECT_TIMEOUT, peripheral.connect());
+            match unless_canceled(cancel, connect).await {
+                Some(Ok(())) => Ok(Some(events)),
+                // Releasing also cancels a connection attempt still pending
+                // in the OS, which would otherwise complete later and hold
+                // the device.
+                Some(Err(e)) => {
+                    release(&peripheral, CANCEL_TIMEOUT).await;
+                    Err(e)
+                }
+                None => {
+                    release(&peripheral, CANCEL_TIMEOUT).await;
+                    Ok(None)
+                }
             }
-            Ok(events)
         });
         let events = match connected {
-            Ok(events) => events,
+            Ok(Some(events)) => events,
+            Ok(None) => {
+                park(adapter);
+                return Ok(None);
+            }
             Err(e) => {
                 // The session never held a connection, so it may scan again.
                 park(adapter);
@@ -305,37 +359,72 @@ impl BtleplugTransport {
         let link = Arc::new(Link::default());
         let (tx, rx) = std::sync::mpsc::channel();
         let pump = runtime.block_on(async {
-            match subscribe(&peripheral).await {
-                Ok(notes) => {
-                    Ok(runtime.spawn(pump(notes, events, peripheral.id(), tx, Arc::clone(&link))))
-                }
-                Err(e) => {
+            match unless_canceled(cancel, subscribe(&peripheral)).await {
+                Some(Ok(notes)) => Ok(Some(runtime.spawn(pump(
+                    notes,
+                    events,
+                    peripheral.id(),
+                    tx,
+                    Arc::clone(&link),
+                )))),
+                Some(Err(e)) => {
                     release(&peripheral, OP_TIMEOUT).await;
                     Err(e)
                 }
+                None => {
+                    release(&peripheral, OP_TIMEOUT).await;
+                    Ok(None)
+                }
             }
         })?;
+        let Some(pump) = pump else {
+            return Ok(None);
+        };
 
         // The scan may have matched before the advertised name arrived.
         let name = if advertised_name(&found.name).is_some() {
             found.name
         } else {
             runtime
-                .block_on(read_advertised_name(&peripheral, Duration::ZERO))
+                .block_on(unless_canceled(
+                    cancel,
+                    read_advertised_name(&peripheral, Duration::ZERO),
+                ))
+                .flatten()
                 .unwrap_or(found.name)
         };
 
-        Ok(Self {
+        let mut transport = Self {
             runtime,
             _adapter: adapter,
             peripheral,
             notifications: rx,
+            received: None,
             link,
             pump,
             closed: false,
+            cancel: None,
             name,
             address: found.address,
-        })
+        };
+        if cancel.load(Ordering::Acquire) {
+            let _ = transport.disconnect();
+            return Ok(None);
+        }
+        Ok(Some(transport))
+    }
+
+    /// End blocking I/O ([`Transport::read_characteristic`] and
+    /// [`Transport::write`]) early once `cancel` is set: the call fails with
+    /// [`io::ErrorKind::Interrupted`] within 100 ms instead of waiting for its
+    /// timeout. `None` (the default) waits for the timeout.
+    pub fn set_cancel(&mut self, cancel: Option<Arc<AtomicBool>>) {
+        self.cancel = cancel;
+    }
+
+    /// When the notification the last [`Transport::read`] returned arrived.
+    pub(crate) fn received_at(&self) -> Option<SystemTime> {
+        self.received
     }
 
     /// Advertised name of the connected device, e.g. `SquareGolf(CD01)`.
@@ -377,6 +466,11 @@ impl BtleplugTransport {
     /// [`Error::Backend`] if the BLE stack refuses or does not answer in time.
     /// The transport is closed either way; dropping it does not try again.
     pub fn disconnect(&mut self) -> Result<()> {
+        self.disconnect_within(OP_TIMEOUT)
+    }
+
+    /// [`disconnect`](Self::disconnect), giving up after `limit`.
+    pub(crate) fn disconnect_within(&mut self, limit: Duration) -> Result<()> {
         if self.closed {
             return Ok(());
         }
@@ -384,7 +478,7 @@ impl BtleplugTransport {
             Ok(())
         } else {
             self.runtime
-                .block_on(op("disconnect", OP_TIMEOUT, self.peripheral.disconnect()))
+                .block_on(op("disconnect", limit, self.peripheral.disconnect()))
         };
         self.closed = true;
         self.link.down.store(true, Ordering::Release);
@@ -418,12 +512,25 @@ impl BtleplugTransport {
         name: &str,
         fut: impl Future<Output = btleplug::Result<T>>,
     ) -> io::Result<T> {
-        match block_on_timeout(self.runtime, OP_TIMEOUT, fut) {
-            Ok(Ok(v)) => Ok(v),
-            Ok(Err(e)) => Err(io::Error::other(format!("{name}: {e}"))),
-            Err(_) => Err(io::Error::new(
+        let cancel = self.cancel.as_deref();
+        // The timer must be created inside the runtime; see `block_on_timeout`.
+        let result = self.runtime.block_on(async {
+            let limited = timeout(OP_TIMEOUT, fut);
+            match cancel {
+                Some(cancel) => unless_canceled(cancel, limited).await,
+                None => Some(limited.await),
+            }
+        });
+        match result {
+            Some(Ok(Ok(v))) => Ok(v),
+            Some(Ok(Err(e))) => Err(io::Error::other(format!("{name}: {e}"))),
+            Some(Err(_)) => Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!("{name}: timed out"),
+            )),
+            None => Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                format!("{name}: canceled"),
             )),
         }
     }
@@ -451,7 +558,8 @@ impl Drop for BtleplugTransport {
 impl Transport for BtleplugTransport {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.notifications.try_recv() {
-            Ok(v) => {
+            Ok((v, at)) => {
+                self.received = Some(at);
                 let n = v.len().min(buf.len());
                 buf[..n].copy_from_slice(&v[..n]);
                 Ok(n)
@@ -608,7 +716,7 @@ async fn pump(
     notes: BoxStream<'static, ValueNotification>,
     events: BoxStream<'static, CentralEvent>,
     id: btleplug::platform::PeripheralId,
-    tx: Sender<Vec<u8>>,
+    tx: Sender<(Vec<u8>, SystemTime)>,
     link: Arc<Link>,
 ) {
     let evt = Uuid::from_u128(ids::EVT);
@@ -623,7 +731,7 @@ async fn pump(
     while let Some(item) = merged.next().await {
         match item {
             Pumped::Data(v) => {
-                if tx.send(v).is_err() {
+                if tx.send((v, SystemTime::now())).is_err() {
                     return; // transport dropped
                 }
             }

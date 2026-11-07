@@ -17,8 +17,10 @@
 //! A raw L2CAP socket would bypass that and have to answer them itself.
 
 use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value};
@@ -34,6 +36,10 @@ const CHAR: &str = "org.bluez.GattCharacteristic1";
 const PROPS: &str = "org.freedesktop.DBus.Properties";
 
 const SCAN_TIMEOUT: Duration = Duration::from_secs(20);
+/// Longest any one D-Bus call may take, so no step of a connect, a write or
+/// a disconnect hangs on bluetoothd. A disarm and a disconnect together stay
+/// within 5 s.
+const METHOD_TIMEOUT: Duration = Duration::from_millis(2500);
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(20);
 /// The vendor's client waits this long after stopping a scan before connecting.
 const SETTLE: Duration = Duration::from_millis(250);
@@ -54,9 +60,14 @@ pub struct BluezTransport {
     /// Advertised manufacturer payload, e.g. `0300A` — the only model
     /// identifier visible on Linux, since `BlueZ` hides the GAP service.
     model_hint: Option<String>,
-    /// Notification payloads forwarded from the signal thread.
-    notifications: Receiver<Vec<u8>>,
+    /// Notification payloads forwarded from the signal thread, with when
+    /// each arrived.
+    notifications: Receiver<(Vec<u8>, SystemTime)>,
+    /// When the notification [`Transport::read`] last returned arrived.
+    received: Option<SystemTime>,
     chars: std::collections::HashMap<u128, OwnedObjectPath>,
+    /// Refuses further I/O once set; see [`set_cancel`](Self::set_cancel).
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 fn backend<E: std::fmt::Display>(e: E) -> Error {
@@ -74,11 +85,45 @@ impl BluezTransport {
     /// [`Error::NotFound`] if nothing appears within the scan window, or
     /// [`Error::Backend`] for D-Bus/BlueZ failures.
     pub fn connect(address: Option<&str>, adapter: &str) -> Result<Self> {
-        let conn = Connection::system().map_err(backend)?;
+        Self::connect_cancelable(address, adapter, &AtomicBool::new(false))?
+            .ok_or_else(|| Error::Backend("connect canceled".into()))
+    }
+
+    /// [`connect`](Self::connect), giving up when `cancel` is set: `Ok(None)`.
+    ///
+    /// The scan, the wait for services and the steps between them look at
+    /// `cancel` at least every 250 ms, and every D-Bus call gives up after
+    /// 2.5 s. A cancel during the scan stops discovery; a cancel after the
+    /// connect request has gone out disconnects the device, since `BlueZ`
+    /// would otherwise finish the connection and hold it (the device takes
+    /// one central at a time).
+    ///
+    /// # Errors
+    /// As [`connect`](Self::connect).
+    // One linear sequence of D-Bus steps, each with its cancel check.
+    #[allow(clippy::too_many_lines)]
+    pub fn connect_cancelable(
+        address: Option<&str>,
+        adapter: &str,
+        cancel: &AtomicBool,
+    ) -> Result<Option<Self>> {
+        let canceled = || cancel.load(Ordering::Acquire);
+        let conn = zbus::blocking::connection::Builder::system()
+            .map_err(backend)?
+            .method_timeout(METHOD_TIMEOUT)
+            .build()
+            .map_err(backend)?;
         let adapter_path =
             OwnedObjectPath::try_from(format!("/org/bluez/{adapter}")).map_err(backend)?;
 
-        let (device_path, name, ble_address) = Self::find(&conn, &adapter_path, address)?;
+        let Some((device_path, name, ble_address)) =
+            Self::find(&conn, &adapter_path, address, cancel)?
+        else {
+            return Ok(None);
+        };
+        if canceled() {
+            return Ok(None);
+        }
         let model_hint = Self::manufacturer_payload(&conn, &device_path);
 
         // (1) Trusted first, or discovery silently fails and the device is
@@ -102,10 +147,16 @@ impl BluezTransport {
 
         let deadline = Instant::now() + RESOLVE_TIMEOUT;
         loop {
+            if canceled() {
+                Self::release(&conn, &device_path);
+                return Ok(None);
+            }
             if Self::prop_bool(&conn, &device_path, "ServicesResolved")? {
                 break;
             }
             if Instant::now() > deadline {
+                // The connection may still complete later and hold the device.
+                Self::release(&conn, &device_path);
                 return Err(Error::Backend("services never resolved".into()));
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -148,6 +199,7 @@ impl BluezTransport {
             .name("allsquare-bluez".into())
             .spawn(move || {
                 for msg in signals {
+                    let at = SystemTime::now();
                     let Ok(msg) = msg else { continue };
                     let Ok((_iface, changed, _inv)) = msg.body().deserialize::<(
                         String,
@@ -158,7 +210,7 @@ impl BluezTransport {
                     };
                     if let Some(v) = changed.get("Value")
                         && let Ok(bytes) = Vec::<u8>::try_from(v.clone())
-                        && tx.send(bytes).is_err()
+                        && tx.send((bytes, at)).is_err()
                     {
                         return; // transport dropped
                     }
@@ -166,7 +218,7 @@ impl BluezTransport {
             })
             .map_err(backend)?;
 
-        Ok(Self {
+        let mut transport = Self {
             conn,
             device_path,
             cmd_path,
@@ -175,14 +227,30 @@ impl BluezTransport {
             model_hint,
             notifications,
             chars,
-        })
+            cancel: None,
+            received: None,
+        };
+        if canceled() {
+            let _ = transport.disconnect();
+            return Ok(None);
+        }
+        Ok(Some(transport))
     }
 
+    /// Best-effort disconnect of a device this connect asked `BlueZ` for.
+    fn release(conn: &Connection, device_path: &OwnedObjectPath) {
+        if let Ok(dev) = Proxy::new(conn, BLUEZ, device_path, DEVICE) {
+            let _: std::result::Result<(), _> = dev.call::<_, _, ()>("Disconnect", &());
+        }
+    }
+
+    /// The matching device, or `None` once `cancel` is set.
     fn find(
         conn: &Connection,
         adapter_path: &OwnedObjectPath,
         address: Option<&str>,
-    ) -> Result<(OwnedObjectPath, String, String)> {
+        cancel: &AtomicBool,
+    ) -> Result<Option<(OwnedObjectPath, String, String)>> {
         let scan = |on: bool| -> Result<()> {
             let ad: Proxy<'_> = Proxy::new(conn, BLUEZ, adapter_path, ADAPTER).map_err(backend)?;
             let method = if on {
@@ -195,19 +263,23 @@ impl BluezTransport {
         };
 
         if let Some(hit) = Self::look(conn, address)? {
-            return Ok(hit);
+            return Ok(Some(hit));
         }
         scan(true)?;
         let deadline = Instant::now() + SCAN_TIMEOUT;
         let mut hit = None;
         while Instant::now() < deadline && hit.is_none() {
+            if cancel.load(Ordering::Acquire) {
+                scan(false)?;
+                return Ok(None);
+            }
             std::thread::sleep(Duration::from_millis(250));
             hit = Self::look(conn, address)?;
         }
         scan(false)?;
         // Connecting straight out of discovery is what hangs BlueZ.
         std::thread::sleep(SETTLE);
-        hit.ok_or(Error::NotFound)
+        hit.map(Some).ok_or(Error::NotFound)
     }
 
     fn look(
@@ -324,7 +396,31 @@ impl BluezTransport {
         Self::prop_bool(&self.conn, &self.device_path, "Connected").unwrap_or(false)
     }
 
-    /// Disconnect.
+    /// Refuse further writes and characteristic reads once `cancel` is set:
+    /// they fail with [`io::ErrorKind::Interrupted`]. A call already in
+    /// progress finishes, within the 2.5 s D-Bus call limit. `None` (the
+    /// default) never refuses.
+    pub(crate) fn set_cancel(&mut self, cancel: Option<Arc<AtomicBool>>) {
+        self.cancel = cancel;
+    }
+
+    /// When the notification the last [`Transport::read`] returned arrived.
+    pub(crate) fn received_at(&self) -> Option<SystemTime> {
+        self.received
+    }
+
+    fn check_cancel(&self) -> io::Result<()> {
+        if self
+            .cancel
+            .as_deref()
+            .is_some_and(|c| c.load(Ordering::Acquire))
+        {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "canceled"));
+        }
+        Ok(())
+    }
+
+    /// Disconnect. Gives up after 2.5 s.
     ///
     /// # Errors
     /// [`Error::Backend`] if the D-Bus call fails.
@@ -342,7 +438,8 @@ impl Transport for BluezTransport {
 
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.notifications.try_recv() {
-            Ok(v) => {
+            Ok((v, at)) => {
+                self.received = Some(at);
                 let n = v.len().min(buf.len());
                 buf[..n].copy_from_slice(&v[..n]);
                 Ok(n)
@@ -356,6 +453,7 @@ impl Transport for BluezTransport {
     }
 
     fn write(&mut self, data: &[u8]) -> io::Result<()> {
+        self.check_cancel()?;
         let ch: Proxy<'_> = Proxy::new(&self.conn, BLUEZ, &self.cmd_path, CHAR)
             .map_err(|e| io::Error::other(e.to_string()))?;
         // CMD declares Write *with* response, so "request" not "command".
@@ -366,6 +464,7 @@ impl Transport for BluezTransport {
     }
 
     fn read_characteristic(&mut self, uuid: u128) -> io::Result<Vec<u8>> {
+        self.check_cancel()?;
         let path = self
             .chars
             .get(&uuid)

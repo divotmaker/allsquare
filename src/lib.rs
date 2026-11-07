@@ -70,12 +70,28 @@
 //! - **`0x11` is not a universal prefix.** `0x91` (battery) and `0x71` (clock)
 //!   arrive unprompted.
 //!
+//! # Features
+//!
+//! - **`bluez`** (Linux) or **`btleplug`** (Windows, macOS): the BLE
+//!   transport, `allsquare::ble::connect`.
+//! - **`config`**: the driver's settings, `allsquare::config::Config`, with
+//!   no BLE stack (for a settings form or a WebAssembly UI).
+//! - **`driver`**: `allsquare::driver::Omni`, a
+//!   [flightrelay](https://github.com/flightrelay/sdk-rust) `DeviceDriver`
+//!   that runs the device for any host of that contract. Connecting needs a
+//!   BLE backend too.
+//! - **`frp`**: the `allsquare-frp` binary, which serves the device to
+//!   [Flight Relay Protocol](https://github.com/flightrelay/spec) controllers.
+//! - **`serde`**: serde derives on the public data types.
+//! - **`testing`**: see below.
+//!
 //! # Testing
 //!
 //! The `testing` feature (off by default) adds `allsquare::testing`: byte-exact
 //! notification fixtures and encoders, so tests of code that consumes the
-//! device's notifications do not spell wire bytes by hand. Enable it as a
-//! dev-dependency feature only.
+//! device's notifications do not spell wire bytes by hand, and
+//! `Omni::connect_with`, which runs a driver session over a link of the
+//! test's own. Enable it as a dev-dependency feature only.
 //!
 //! # Units
 //!
@@ -100,13 +116,16 @@ pub mod ble;
 #[cfg(feature = "bluez")]
 pub mod bluez;
 
-#[cfg(feature = "frp")]
-pub mod frp;
+#[cfg(feature = "config")]
+pub mod config;
+
+#[cfg(feature = "driver")]
+pub mod driver;
 
 #[cfg(feature = "btleplug")]
 pub mod btleplug_transport;
 
-#[cfg(feature = "testing")]
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 pub use client::{Client, Event, Firmware, Transport};

@@ -19,13 +19,13 @@ BLE protocol and exposes shot data through a synchronous, poll-based API:
   state tracking automatically.
 - **`ble::connect`** — platform-agnostic BLE transport. BlueZ on Linux
   (`bluez` feature), btleplug on Windows/macOS (`btleplug` feature).
-- **`FrpDevice`** — [Flight Relay Protocol](https://github.com/flightrelay/spec)
-  device (`frp` feature). Bridges shot data to an FRP controller over WebSocket,
-  either serving controllers on a local port (default 5880) or dialing a central
-  controller such as flighthook. `check_controller()` returns the controller's
-  `set_detection_mode` request as a `ControllerCommand` (`mode`, `handed`,
-  `club`); Square Golf selects clubs rather than modes, so `club` and `handed`
-  map onto `Client::select_club` and `Client::set_handed`.
+- **`driver::Omni`** — a [flightrelay](https://github.com/flightrelay/sdk-rust)
+  `DeviceDriver` (`driver` feature): connect, arm, follow the controller's club
+  and hand, report shots, release the device. Any host of that contract can
+  run it; its settings are `config::Config` (`config` feature, no BLE stack).
+- **`allsquare-frp`** — a [Flight Relay Protocol](https://github.com/flightrelay/spec)
+  (FRP 0.2.0) device binary (`frp` feature plus a BLE backend) that serves the
+  driver to FRP controllers.
 
 ## Legal Basis — DMCA Section 1201(f)
 
@@ -167,7 +167,7 @@ dev-dependency feature only:
 
 ```toml
 [dev-dependencies]
-allsquare = { version = "0.2.1", features = ["testing"] }
+allsquare = { version = "0.3", features = ["testing"] }
 ```
 
 - `BALL_NOTIFICATION`, `QUERY_RESPONSE`, `CLUB_NOTIFICATION_NO_DATA` — fixed
@@ -179,6 +179,86 @@ allsquare = { version = "0.2.1", features = ["testing"] }
   and a zeroed `BallMetrics` carrying it.
 
 The fixtures describe a synthetic device and carry no device identity.
+
+With the `driver` feature too, `driver::Omni::connect_with` runs a driver
+session over a link of the test's own (a `driver::BleLink`), so a test can feed
+it fixtures and check the FRP events, the commands written and the release.
+
+## FRP binary: `allsquare-frp`
+
+```sh
+cargo run --release --features frp,bluez --bin allsquare-frp      # Linux
+cargo run --release --features frp,btleplug --bin allsquare-frp   # Windows, macOS
+```
+
+```text
+allsquare-frp [--config <path>] [--target <listen-addr | ws://host:port/frp>]
+              [--set <key>=<value>]... [--log <info|debug|trace>] [--help]
+```
+
+- `--target`: an address to listen on for controllers (default `0.0.0.0:5880`),
+  or a `ws://` URL of a controller to dial, e.g. `ws://flighthook:5880/frp`.
+  Several controllers can connect at once.
+- `--config`: a TOML file holding the settings below at the top level.
+- `--set key=value`: a setting over the file, e.g. `--set club=PW`,
+  `--set address=SquareGolf(CD01)`, `--set dot_bottom_to_face_center_mm.7I=21`.
+- `--help` lists every setting with its default. Ctrl-C disarms and
+  disconnects the device before exiting.
+
+| Setting | Default | |
+|---|---|---|
+| `address` | unset | BLE address, macOS peripheral UUID or advertised name to pin; unset or blank takes the first device found |
+| `club` | `7I` | FRP club code armed until a controller names a club |
+| `advanced_spin` | `true` | the device's advanced spin measurement |
+| `discard_non_putting_zero_spin` | `true` | drop shots that read zero spin unless the putter is in play |
+| `dot_bottom_to_face_center_mm` | built-in | per-club face impact calibration, keyed by club code (see Face impact) |
+
+Clubs are FRP codes read leniently (`7i`, `I7`, `pw`, `52`); a code that names
+no club is ignored with a warning.
+
+What goes out over FRP 0.2.0:
+
+- `device_telemetry` with `source: measured` and the identity (manufacturer
+  Invant, model, launch monitor firmware) before the first shot; then `ready`,
+  `device_state`, `battery_pct` and `zero_spin_discards`.
+- Per shot: `shot_trigger` with a `timestamp` (when the ball notification
+  arrived), `launch`, `club_path` and `face_impact` when the club was tracked,
+  `shot_finished`. Launch only: no `flight_result`. A total spin of 0 (putts) is
+  sent as `total_spin_rpm: 0` with no `spin_axis`.
+- A zero-spin read with any club but the putter is a misread: it is dropped
+  with a warning alert and counted in `zero_spin_discards`, and takes no shot
+  number.
+- `set_detection_mode`: `club` and `handed` select the club on the device,
+  only when one of them changes. A club the device has no code for is armed as
+  the nearest club of the same kind (MD → DR, 2W/4W → 3W, 1H/2H → 3H, 1I/2I →
+  3I, …). `mode` is ignored: putting and chipping differ only by club.
+- `raw_frame` on request: one per notification (`notify 11 02`, or the family
+  byte alone outside the `0x11` family, e.g. `notify 91`) or command
+  (`cmd 82`), stamped with the time it reached the BLE stack or was handed to
+  it. Heartbeats, heartbeat acks, query replies and notifications this crate
+  does not recognize are never sent.
+- Stopping disarms the device and disconnects it within 5 s.
+
+### Migrating from 0.3
+
+This release moves to flightrelay 0.5 (FRP 0.2.0). Controllers move to FRP
+0.2.0 too; a 0.1.0 peer cannot handshake.
+
+| | 0.3 | This release |
+|---|---|---|
+| `allsquare-frp` arguments | `allsquare-frp [frp-target] [club]` | named flags only: `allsquare-frp --target <frp-target> --set club=PW` |
+| FRP messages | `ball_flight`; telemetry without `source`; triggers without a time | `launch`; telemetry carries `source`; triggers carry a `timestamp`; raw frames on request |
+| A club with no Square Golf code | the current club stays armed | the nearest club of its kind is armed |
+| Club selection | also re-sent when nothing changed | sent only when the club or the hand changes |
+| Total spin of 0 | left out | sent as 0 |
+| Zero-spin misreads | reported as shots | discarded |
+| Stop and Ctrl-C | not honored during the connect | stop the connect at any point; a running session disarms and disconnects the device |
+| Lost link | `allsquare-frp` exits | reconnects with a backoff from 1 s to 15 s; shot numbers continue |
+| Controllers | one | several at once |
+| Notifications the crate does not recognize | exported as raw frames | written to the trace log only |
+| `BlueZ` D-Bus calls | no timeout | each call gives up after 2.5 s |
+| FRP device API | `FrpDevice`, `ControllerCommand`, the `frp` module | `driver` (a flightrelay `DeviceDriver`); conversions are `driver::{launch, club_data, face_impact}` |
+| Connect API | no cancelable connect | adds `ble::connect_cancelable`, `BluezTransport::connect_cancelable`, `BtleplugTransport::connect_cancelable` and `BtleplugTransport::set_cancel` |
 
 ## Reading a command's type
 

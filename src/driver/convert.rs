@@ -1,17 +1,17 @@
 //! Convert Square Golf shot data into FRP domain types.
 
-use flightrelay::types::{BallFlight, ClubData as FrpClubData, FaceImpact};
+use flightrelay::types::{ClubData as FrpClubData, FaceImpact, Launch};
 use flightrelay::units::{Distance, Velocity};
 
 use crate::protocol::{BallMetrics, ClubMetrics};
 
-/// Convert [`BallMetrics`] to an FRP [`BallFlight`].
+/// Convert [`BallMetrics`] to an FRP [`Launch`].
 ///
-/// The device measures launch only — carry, landing, total, roll, apex and
-/// flight time are computed by the vendor's app, not the hardware, so they stay
-/// `None`. It reports both spin pairs (backspin + sidespin, total + axis), and
-/// all four are sent. A total spin of 0, which the device reports for putts,
-/// sends neither total spin nor axis.
+/// The device measures launch only; carry, total and the rest of the flight
+/// are not measured, so no `flight_result` goes with it. It reports both spin
+/// pairs (backspin + sidespin, total + axis), and all four are sent. A total
+/// spin of 0, which the device reports for putts, is sent as 0 with no axis:
+/// a ball with no spin has no spin axis.
 ///
 /// Sign conventions:
 /// - `launch_azimuth` is "positive = right of target"; the device's `direction`
@@ -23,17 +23,15 @@ use crate::protocol::{BallMetrics, ClubMetrics};
 ///   axis has the same inverted polarity as its sidespin, so it is **negated**
 ///   too.
 #[must_use]
-pub fn ball_flight(b: &BallMetrics) -> BallFlight {
-    let spin_measured = b.total_spin > 0;
-    BallFlight {
+pub fn launch(b: &BallMetrics) -> Launch {
+    Launch {
         launch_speed: Some(Velocity::MetersPerSecond(b.speed)),
         launch_azimuth: Some(b.direction),
         launch_elevation: Some(b.launch_angle),
         backspin_rpm: Some(i32::from(b.back_spin)),
         sidespin_rpm: Some(-i32::from(b.side_spin)),
-        total_spin_rpm: spin_measured.then_some(i32::from(b.total_spin)),
-        spin_axis: spin_measured.then_some(-b.spin_axis),
-        ..BallFlight::default()
+        total_spin_rpm: Some(i32::from(b.total_spin)),
+        spin_axis: (b.total_spin != 0).then_some(-b.spin_axis),
     }
 }
 
@@ -119,9 +117,9 @@ mod tests {
     }
 
     #[test]
-    fn ball_flight_conversion() {
+    fn launch_conversion() {
         let (ball, _) = tracked_chip();
-        let frp = ball_flight(&ball);
+        let frp = launch(&ball);
         assert_eq!(frp.launch_speed, Some(Velocity::MetersPerSecond(3.30)));
         assert_eq!(frp.launch_elevation, Some(32.51));
         assert_eq!(frp.launch_azimuth, Some(7.39));
@@ -133,13 +131,6 @@ mod tests {
         // Wire -8.00 (device: negative = tilts right) -> FRP +8.0, the same
         // sense as the negated sidespin.
         assert_eq!(frp.spin_axis, Some(8.0));
-        // Measured at launch only; the app computes the rest.
-        assert_eq!(frp.carry_distance, None);
-        assert_eq!(frp.carry_offline, None);
-        assert_eq!(frp.total_distance, None);
-        assert_eq!(frp.total_offline, None);
-        assert_eq!(frp.flight_time, None);
-        assert_eq!(frp.descent_angle, None);
     }
 
     #[test]
@@ -151,7 +142,7 @@ mod tests {
             side_spin: 340,
             ..ball
         };
-        let frp = ball_flight(&draw);
+        let frp = launch(&draw);
         assert_eq!(frp.sidespin_rpm, Some(-340));
         assert_eq!(frp.spin_axis, Some(-6.5));
     }
@@ -159,11 +150,11 @@ mod tests {
     #[test]
     fn spin_pairs_agree() {
         let (ball, _) = tracked_chip();
-        let frp = ball_flight(&ball);
-        let mut components = BallFlight {
+        let frp = launch(&ball);
+        let mut components = Launch {
             backspin_rpm: frp.backspin_rpm,
             sidespin_rpm: frp.sidespin_rpm,
-            ..BallFlight::default()
+            ..Launch::default()
         };
         components.complete_spin();
         assert_eq!(components.total_spin_rpm, frp.total_spin_rpm);
@@ -172,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_spin_sends_neither_total_nor_axis() {
+    fn zero_spin_sends_a_zero_total_and_no_axis() {
         // Captured 1.59 m/s putt: every spin field zero.
         let putt = BallMetrics {
             shot_type: 0x37,
@@ -184,8 +175,8 @@ mod tests {
             back_spin: 0,
             side_spin: 0,
         };
-        let frp = ball_flight(&putt);
-        assert_eq!(frp.total_spin_rpm, None);
+        let frp = launch(&putt);
+        assert_eq!(frp.total_spin_rpm, Some(0));
         assert_eq!(frp.spin_axis, None);
         assert_eq!(frp.backspin_rpm, Some(0));
         assert_eq!(frp.sidespin_rpm, Some(0));

@@ -4,6 +4,8 @@
 //! do not need `cfg` blocks. If both are enabled on Linux, `BlueZ` wins — it is
 //! the verified path there.
 
+use std::sync::atomic::AtomicBool;
+
 use crate::error::Result;
 
 #[cfg(feature = "bluez")]
@@ -51,6 +53,40 @@ pub fn connect(address: Option<&str>) -> Result<BleTransport> {
 #[cfg(all(feature = "btleplug", not(feature = "bluez")))]
 pub fn connect(address: Option<&str>) -> Result<BleTransport> {
     BtleplugTransport::connect(address)
+}
+
+/// [`connect`], giving up when `cancel` is set: `Ok(None)`.
+///
+/// Every wait looks at `cancel` at least every 250 ms. A cancel during the
+/// scan stops it; a cancel once the connect request has gone out disconnects
+/// the device, so a connection that completes late does not hold it (the
+/// device takes one central at a time).
+///
+/// # Errors
+/// As [`connect`].
+#[cfg(feature = "bluez")]
+pub fn connect_cancelable(
+    address: Option<&str>,
+    cancel: &AtomicBool,
+) -> Result<Option<BleTransport>> {
+    BluezTransport::connect_cancelable(address, "hci0", cancel)
+}
+
+/// [`connect`], giving up when `cancel` is set: `Ok(None)`.
+///
+/// Every wait looks at `cancel` at least every 250 ms. A cancel during the
+/// scan stops it; a cancel once the connect request has gone out disconnects
+/// the device, so a connection that completes late does not hold it (the
+/// device takes one central at a time).
+///
+/// # Errors
+/// As [`connect`].
+#[cfg(all(feature = "btleplug", not(feature = "bluez")))]
+pub fn connect_cancelable(
+    address: Option<&str>,
+    cancel: &AtomicBool,
+) -> Result<Option<BleTransport>> {
+    BtleplugTransport::connect_cancelable(address, cancel)
 }
 
 /// Whether a device matches a pinned value.
