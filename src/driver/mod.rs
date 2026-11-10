@@ -31,7 +31,9 @@
 //!   carrying both. The detection mode does not apply: putting and chipping
 //!   differ only by the club in play.
 //! - **Telemetry:** `ready`, `device_state` (`waiting`, `ready`,
-//!   `recording`, `processing`), `battery_pct`, `zero_spin_discards`.
+//!   `recording`, `processing`), `battery_pct` (not sent while the charge
+//!   state is unknown or there is no battery; sent once as an empty value to
+//!   clear a level reported earlier), `zero_spin_discards`.
 //! - **Close** disarms the device and disconnects it on either backend,
 //!   within 5 s. After a lost link it only lets go of the link.
 //! - **Raw frames:** each notification (`"notify 11 02"`, labeled with its
@@ -61,7 +63,7 @@ use flightrelay::{FrpEvent, RawDir, RawFrame, Severity, Source, Velocity};
 use crate::client::{Client, Event, Transport};
 use crate::club::{Club, Handed};
 use crate::config::{Settings, nearest_club};
-use crate::protocol::{self, BallMetrics, Command, DeviceState, Notification};
+use crate::protocol::{self, BallMetrics, ChargingState, Command, DeviceState, Notification};
 
 pub use crate::config::Config;
 pub use convert::{club_data, face_impact, launch};
@@ -266,6 +268,7 @@ impl Omni {
             hand,
             armed: false,
             discards: 0,
+            battery_shown: false,
             last_rx: Vec::new(),
             ball_at: None,
             pending: Vec::new(),
@@ -646,6 +649,8 @@ pub struct OmniSession {
     armed: bool,
     /// Zero-spin misreads dropped in this session.
     discards: u32,
+    /// A battery level is on the host's card.
+    battery_shown: bool,
     /// The last notification, to recognize the device's repeat of it as the
     /// client does.
     last_rx: Vec<u8>,
@@ -760,10 +765,20 @@ impl OmniSession {
             }
             &Event::Battery { percent, state } => {
                 out.log(Level::Debug, format!("battery {percent}% {state:?}"));
-                out.telemetry([(
-                    flightrelay::types::telemetry::BATTERY_PCT,
-                    percent.to_string(),
-                )]);
+                // With no battery or an unknown charge state the level byte
+                // is not a reading (`91 00 05` while plugged in). An empty
+                // value clears a level reported earlier.
+                let level = match state {
+                    ChargingState::Unknown | ChargingState::NoBattery => None,
+                    _ => Some(percent.to_string()),
+                };
+                if level.is_some() || self.battery_shown {
+                    self.battery_shown = level.is_some();
+                    out.telemetry([(
+                        flightrelay::types::telemetry::BATTERY_PCT,
+                        level.unwrap_or_default(),
+                    )]);
+                }
             }
             Event::Shot { ball, club } => self.shot(ball, club.as_ref(), out),
             _ => {}

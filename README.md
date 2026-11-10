@@ -220,7 +220,9 @@ What goes out over FRP 0.2.0:
 
 - `device_telemetry` with `source: measured` and the identity (manufacturer
   Invant, model, launch monitor firmware) before the first shot; then `ready`,
-  `device_state`, `battery_pct` and `zero_spin_discards`.
+  `device_state`, `battery_pct` and `zero_spin_discards`. An unknown charge
+  state (or no battery) reports no level: `battery_pct` is not sent, or is
+  sent once as an empty value to clear a level reported earlier.
 - Per shot: `shot_trigger` with a `timestamp` (when the ball notification
   arrived), `launch`, `club_path` and `face_impact` when the club was tracked,
   `shot_finished`. Launch only: no `flight_result`. A total spin of 0 (putts) is

@@ -290,6 +290,9 @@ unverified.
 `level` is 0–100. `chargingState`: `0` not charging, `1` discharging,
 `2` charging, `3` full, `4` no battery, `5` unknown.
 
+With state `4` or `5` the level byte is not a reading: a monitor on external
+power can send `91 00 05` every few seconds.
+
 ### 6.8 `0x71` — Clock tick
 
 9 bytes, unsolicited, roughly every 3 seconds. Carries the same value as the

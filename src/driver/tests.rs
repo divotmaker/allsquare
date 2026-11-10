@@ -694,6 +694,53 @@ fn state_and_battery_become_telemetry() {
 }
 
 #[test]
+fn a_full_battery_and_a_discharging_one_report_their_levels() {
+    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    rig.poll();
+    rig.link.feed(&[0x91, 100, 0x03]);
+    assert_eq!(telemetry(&rig.poll(), "battery_pct"), ["100"]);
+    rig.link.feed(&[0x91, 0x37, 0x01]);
+    assert_eq!(telemetry(&rig.poll(), "battery_pct"), ["55"]);
+}
+
+#[test]
+fn an_unknown_charge_state_reports_no_level() {
+    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    rig.poll();
+    rig.link.feed(&[0x91, 0x00, 0x05]);
+    let events = rig.poll();
+    assert!(telemetry(&events, "battery_pct").is_empty());
+    assert!(
+        logs(&events)
+            .iter()
+            .any(|(l, line)| *l == Level::Debug && line.contains("Unknown")),
+        "{:?}",
+        logs(&events)
+    );
+}
+
+#[test]
+fn no_battery_reports_no_level() {
+    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    rig.poll();
+    rig.link.feed(&[0x91, 0x00, 0x04]);
+    assert!(telemetry(&rig.poll(), "battery_pct").is_empty());
+}
+
+#[test]
+fn a_level_goes_off_the_card_once_the_charge_state_is_unknown() {
+    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    rig.poll();
+    rig.link.feed(&[0x91, 100, 0x03]);
+    assert_eq!(telemetry(&rig.poll(), "battery_pct"), ["100"]);
+    rig.link.feed(&[0x91, 0x00, 0x05]);
+    assert_eq!(telemetry(&rig.poll(), "battery_pct"), [""]);
+    // Said once; the next unknown frame adds nothing.
+    rig.link.feed(&[0x91, 0x00, 0x04]);
+    assert!(telemetry(&rig.poll(), "battery_pct").is_empty());
+}
+
+#[test]
 fn close_disarms_then_releases() {
     let mut rig = Rig::new(Config::default(), DeviceCommand::default());
     rig.poll();
