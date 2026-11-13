@@ -16,11 +16,13 @@ BLE protocol and exposes shot data through a synchronous, poll-based API:
 
 - **`Client<T>`** — poll-based client over any `Transport`. Handles the connect
   sequence, heartbeats, notification deduplication, shot correlation and device
-  state tracking automatically.
+  state tracking automatically. `Client::poll_at(now)` takes the time as an
+  input, so the heartbeat and the link watchdog run on the caller's clock;
+  `Client::poll` passes `Instant::now()`.
 - **`ble::connect`** — platform-agnostic BLE transport. BlueZ on Linux
   (`bluez` feature), btleplug on Windows/macOS (`btleplug` feature).
 - **`driver::Omni`** — a [flightrelay](https://github.com/flightrelay/sdk-rust)
-  `DeviceDriver` (`driver` feature): connect, arm, follow the club and hand
+  `FrpDriver` (`driver` feature): connect, arm, follow the club and hand
   of each `golfer.turn`, report shots, release the device. Any host of that contract can
   run it; its settings are `config::Config` (`config` feature, no BLE stack).
 - **`allsquare-frp`** — a [Flight Relay Protocol](https://github.com/flightrelay/spec)
@@ -250,14 +252,25 @@ What goes out over FRP 0.3.0:
   does not recognize are never sent.
 - Stopping disarms the device and disconnects it within 5 s.
 
+### Migrating from 0.5
+
+0.6 moves to flightrelay 0.7, where time is an input to a driver. The wire
+protocol (FRP 0.3.0) and the device's behavior are unchanged.
+
+| | 0.5 | 0.6 |
+|---|---|---|
+| Session entry point | `OmniSession::poll(timeout, out)`, which reads and sleeps until `timeout` | `OmniSession::step(now, out) -> Activity`, one pass at `now`: `Activity::Active` after an event, `Activity::Idle` after three reads that yield none. `FrpSession::poll` is flightrelay's loop over `step` |
+| Heartbeat and link watchdog | the wall clock, inside `Client::poll` | adds `Client::poll_at(now)`; `poll` is `poll_at(Instant::now())`. The driver's session runs them on the host's time |
+| A session from `Omni::connect_with` (`testing`) | stepped with `poll(timeout, out)` in real time | stepped with `step(now, out)`, e.g. through flightrelay's `testing::TestHost` in virtual time |
+
 ### Migrating from 0.4
 
-This release moves to flightrelay 0.6 (FRP 0.3.0), the actor bus. A FRP
+0.5 moves to flightrelay 0.6 (FRP 0.3.0), the actor bus. A FRP
 0.2.0 endpoint does not interoperate with it, so the other side moves to FRP
 0.3.0 too. The device's behavior is unchanged: same arming, same settings,
 same shots.
 
-| | 0.4 | This release |
+| | 0.4 | 0.5 |
 |---|---|---|
 | Shot messages | `shot_trigger`, `launch`, `club_path`, `face_impact`, `shot_finished`, `raw_frame`, `alert` | `shot.trigger`, `shot.launch`, `shot.club`, `shot.impact`, `shot.finished`, `shot.raw`, `bus.alert` |
 | Readiness | `device_telemetry` `ready`, true only while the device has a ball and is ready | `blockers` of the actor's `bus.actor`: empty then, `no_ball` while the device looks for a ball, `not_armed` otherwise |
@@ -265,7 +278,7 @@ same shots.
 | Club and hand | `set_detection_mode` (`club`, `handed`) | the hints of each `golfer.turn` (`club`, `handedness`) |
 | Raw frames | on when a controller asks | on with `--set frp.raw_frames=true` (the `[frp]` table of the config file) |
 | `allsquare-frp` identity | the device | an actor id, generated on the first run and saved in the config file's `[frp]` table |
-| Driver API | `DeviceSession::command(&DeviceCommand)` | `DeviceSession::hints(&TurnHints)` |
+| Driver API | `FrpSession::command(&DeviceCommand)` | `FrpSession::hints(&TurnHints)` |
 
 ### Migrating from 0.3
 
@@ -285,7 +298,7 @@ same shots.
 | Controllers | one | several at once |
 | Notifications the crate does not recognize | exported as raw frames | written to the trace log only |
 | `BlueZ` D-Bus calls | no timeout | each call gives up after 2.5 s |
-| FRP device API | `FrpDevice`, `ControllerCommand`, the `frp` module | `driver` (a flightrelay `DeviceDriver`); conversions are `driver::{launch, club_data, face_impact}` |
+| FRP device API | `FrpDevice`, `ControllerCommand`, the `frp` module | `driver` (a flightrelay `FrpDriver`); conversions are `driver::{launch, club_data, face_impact}` |
 | Connect API | no cancelable connect | adds `ble::connect_cancelable`, `BluezTransport::connect_cancelable`, `BtleplugTransport::connect_cancelable` and `BtleplugTransport::set_cancel` |
 
 ## Reading a command's type

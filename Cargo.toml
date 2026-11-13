@@ -41,7 +41,7 @@ bluez = ["dep:zbus"]
 # The driver's settings (`allsquare::config`), with no BLE stack: what a
 # settings form or a WebAssembly UI needs.
 config = ["dep:flightrelay", "flightrelay/config", "serde"]
-# The `DeviceDriver` (`allsquare::driver`). Connecting needs `bluez` or
+# The `FrpDriver` (`allsquare::driver`). Connecting needs `bluez` or
 # `btleplug` too.
 driver = ["config", "flightrelay/driver"]
 # The `allsquare-frp` binary.

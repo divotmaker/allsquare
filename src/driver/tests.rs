@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use flightrelay::driver::{ConnectHost, DeviceEvent, HostFlags, StatusChange, Stop};
+use flightrelay::driver::{DeviceEvent, HostFlags, StatusChange};
+use flightrelay::testing::TestHost;
 use flightrelay::{BusAlert, ShotTrigger};
 use flightrelay::{ClubData, Distance, Handedness, Launch};
 
@@ -116,18 +117,10 @@ impl BleLink for FakeLink {
     }
 }
 
-struct Host(TurnHints);
-
-impl ConnectHost for Host {
-    fn tick(&mut self) {}
-    fn hints(&self) -> &TurnHints {
-        &self.0
-    }
-}
-
-/// A driver and session over a fresh fake link, plus what connecting emitted.
+/// A driver and session over a fresh fake link, on a host in virtual time,
+/// plus what connecting emitted.
 struct Rig {
-    flags: HostFlags,
+    host: TestHost,
     driver: Omni,
     session: Option<OmniSession>,
     link: FakeLink,
@@ -136,25 +129,19 @@ struct Rig {
 
 impl Rig {
     fn new(config: Config, hints: TurnHints) -> Self {
-        let flags = HostFlags::new();
+        let mut host = TestHost::new().with_hints(hints);
         let mut driver = Omni::new(config).expect("valid config");
         let link = FakeLink::default();
-        let stop = Stop::new();
-        let mut host = Host(hints);
-        let mut seen = Vec::new();
-        let session = {
-            let mut sink = |e| seen.push(e);
-            let mut ctx = ConnectCtx::new(&stop, Events::new(&mut sink, &flags), &mut host);
-            driver
-                .connect_with(&mut ctx, link.clone())
-                .expect("connects")
-        };
+        let session = host
+            .connect_with(|ctx| driver.connect_with(ctx, link.clone()))
+            .expect("connects");
+        let connect_events = host.take();
         Self {
-            flags,
+            host,
             driver,
             session: Some(session),
             link,
-            connect_events: seen,
+            connect_events,
         }
     }
 
@@ -162,28 +149,33 @@ impl Rig {
         self.session.as_mut().expect("open")
     }
 
+    /// Step the session through `d` of virtual time.
+    fn run_for(&mut self, d: Duration) -> Result<Vec<DeviceEvent>, Error> {
+        let session = self.session.as_mut().expect("open");
+        self.host.run_for(d, |now, out| session.step(now, out))?;
+        Ok(self.host.take())
+    }
+
+    /// Step the session through 20 ms, which reads everything fed so far.
     fn poll(&mut self) -> Vec<DeviceEvent> {
-        let mut seen = Vec::new();
-        let mut sink = |e| seen.push(e);
-        let mut out = Events::new(&mut sink, &self.flags);
-        self.session
-            .as_mut()
-            .expect("open")
-            .poll(Duration::from_millis(20), &mut out)
-            .expect("poll");
-        seen
+        self.run_for(Duration::from_millis(20)).expect("step")
     }
 
     fn close(&mut self) -> Vec<DeviceEvent> {
-        let mut seen = Vec::new();
-        let mut sink = |e| seen.push(e);
-        let mut out = Events::new(&mut sink, &self.flags);
-        self.session
-            .take()
-            .expect("open")
-            .close(&mut out)
-            .expect("close");
-        seen
+        let session = self.session.take().expect("open");
+        self.host.with(|_, out| session.close(out)).expect("close");
+        self.host.take()
+    }
+
+    /// A new session from the same driver over a fresh fake link.
+    fn reconnect(&mut self) -> (OmniSession, FakeLink, Vec<DeviceEvent>) {
+        let link = FakeLink::default();
+        let driver = &mut self.driver;
+        let session = self
+            .host
+            .connect_with(|ctx| driver.connect_with(ctx, link.clone()))
+            .expect("connects");
+        (session, link, self.host.take())
     }
 
     /// Feed a shot (ball, then the club metrics the client asks for) and poll
@@ -344,7 +336,6 @@ fn connect_reports_identity_without_publishing_the_address() {
     let info = Omni::info(rig.driver.config());
     assert_eq!(info.source, Source::Measured);
     assert!(info.exclusive);
-    assert_eq!(Omni::STOP_WAIT, Duration::from_secs(6));
 }
 
 #[test]
@@ -446,7 +437,7 @@ fn a_shot_is_sent_once_complete_with_a_timestamp() {
 #[test]
 fn the_trigger_and_frames_carry_the_arrival_time() {
     let mut rig = Rig::new(Config::default(), TurnHints::default());
-    rig.flags.set_wants_raw(true);
+    rig.host.flags.set_wants_raw(true);
     rig.poll();
     let (ball, club) = iron();
     let first = UNIX_EPOCH + Duration::from_millis(1_700_000_000_000);
@@ -480,24 +471,6 @@ fn the_trigger_and_frames_carry_the_arrival_time() {
         })
         .collect();
     assert_eq!(ball_frames, [Some(1_700_000_010_000); 2]);
-}
-
-#[test]
-fn a_poll_returns_near_its_timeout() {
-    let mut rig = Rig::new(Config::default(), TurnHints::default());
-    rig.poll();
-    for timeout in [Duration::ZERO, Duration::from_millis(20)] {
-        let started = Instant::now();
-        let mut sink = |_| {};
-        let mut out = Events::new(&mut sink, &rig.flags);
-        rig.session
-            .as_mut()
-            .expect("open")
-            .poll(timeout, &mut out)
-            .expect("poll");
-        let took = started.elapsed();
-        assert!(took >= timeout, "{timeout:?}: returned after {took:?}");
-    }
 }
 
 #[test]
@@ -653,7 +626,7 @@ fn raw_frames_only_when_wanted_and_never_private_ones() {
     let quiet = rig.shot(&ball, &club);
     assert!(!frp(&quiet).iter().any(|e| matches!(e, FrpBody::ShotRaw(_))));
 
-    rig.flags.set_wants_raw(true);
+    rig.host.flags.set_wants_raw(true);
     rig.link.feed(&testing::heartbeat_ack(DeviceState::Ready));
     rig.link.feed(&testing::QUERY_RESPONSE);
     let mut events = rig.poll();
@@ -809,18 +782,35 @@ fn a_lost_link_ends_the_session() {
     let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     rig.link.wires().lost = true;
-    let mut seen = Vec::new();
-    let mut sink = |e| seen.push(e);
-    let mut out = Events::new(&mut sink, &rig.flags);
-    let result = rig
-        .session
-        .as_mut()
-        .expect("open")
-        .poll(Duration::from_millis(20), &mut out);
+    let result = rig.run_for(Duration::from_millis(20));
     assert!(
         matches!(result, Err(Error::Device(crate::Error::Transport(_)))),
         "{result:?}"
     );
+}
+
+#[test]
+fn a_silent_device_ends_the_session_after_the_link_timeout() {
+    // The device acknowledges every heartbeat; this fake link never does.
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
+    let t0 = rig.host.now();
+    let quiet = rig.run_for(Duration::from_secs(14));
+    assert!(quiet.is_ok(), "ended early: {quiet:?}");
+    let heartbeat = Command::Heartbeat.type_byte();
+    let beats = rig
+        .link
+        .wires()
+        .written
+        .iter()
+        .filter(|w| w[1] == heartbeat)
+        .count();
+    assert_eq!(beats, 3, "at 0, 5 and 10 s");
+    let result = rig.run_for(Duration::from_secs(2));
+    assert!(
+        matches!(result, Err(Error::Device(crate::Error::Disconnected))),
+        "{result:?}"
+    );
+    assert_eq!(rig.host.now() - t0, Duration::from_secs(15));
 }
 
 #[test]
@@ -829,17 +819,7 @@ fn close_after_a_lost_link_writes_nothing_and_succeeds() {
     rig.poll();
     let written = rig.link.wires().written.len();
     rig.link.wires().lost = true;
-    {
-        let mut sink = |_| {};
-        let mut out = Events::new(&mut sink, &rig.flags);
-        assert!(
-            rig.session
-                .as_mut()
-                .expect("open")
-                .poll(Duration::from_millis(20), &mut out)
-                .is_err()
-        );
-    }
+    assert!(rig.run_for(Duration::from_millis(20)).is_err());
     let events = rig.close();
     assert_eq!(rig.link.wires().written.len(), written, "no disarm");
     assert_eq!(rig.link.wires().released, 1);
@@ -864,17 +844,7 @@ fn config_warnings_are_logged_on_the_first_connect_only() {
     assert_eq!(&rig.link.selects()[0][3..5], &[0x07, 0x02]);
 
     // Reconnecting does not repeat them.
-    let stop = Stop::new();
-    let mut host = Host(TurnHints::default());
-    let mut seen = Vec::new();
-    {
-        let mut sink = |e| seen.push(e);
-        let mut ctx = ConnectCtx::new(&stop, Events::new(&mut sink, &rig.flags), &mut host);
-        let _session = rig
-            .driver
-            .connect_with(&mut ctx, FakeLink::default())
-            .expect("connects");
-    }
+    let (_session, _link, seen) = rig.reconnect();
     assert!(!logs(&seen).iter().any(|(l, _)| *l == Level::Warn));
 }
 
@@ -886,32 +856,11 @@ fn shot_numbers_keep_counting_across_sessions() {
     rig.shot(&ball, &club);
     rig.close();
 
-    let stop = Stop::new();
-    let mut host = Host(TurnHints::default());
-    let link = FakeLink::default();
-    let mut session = {
-        let mut sink = |_| {};
-        let mut ctx = ConnectCtx::new(&stop, Events::new(&mut sink, &rig.flags), &mut host);
-        rig.driver
-            .connect_with(&mut ctx, link.clone())
-            .expect("connects")
-    };
-    let mut seen = Vec::new();
-    {
-        let mut sink = |e| seen.push(e);
-        let mut out = Events::new(&mut sink, &rig.flags);
-        session
-            .poll(Duration::from_millis(5), &mut out)
-            .expect("poll");
-        link.feed(&testing::ball_notification(&ball));
-        session
-            .poll(Duration::from_millis(5), &mut out)
-            .expect("poll");
-        link.feed(&testing::club_notification(&club));
-        session
-            .poll(Duration::from_millis(5), &mut out)
-            .expect("poll");
-    }
+    let (session, link, _) = rig.reconnect();
+    rig.session = Some(session);
+    rig.link = link;
+    rig.poll();
+    let seen = rig.shot(&ball, &club);
     let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = frp(&seen)
         .into_iter()
         .find(|e| matches!(e, FrpBody::ShotTrigger(_)))
@@ -924,15 +873,11 @@ fn shot_numbers_keep_counting_across_sessions() {
 
 #[test]
 fn a_stopped_connect_returns_stopped() {
-    let flags = HostFlags::new();
     let mut driver = Omni::new(Config::default()).expect("valid");
-    let stop = Stop::new();
-    stop.stop();
-    let mut host = Host(TurnHints::default());
-    let mut sink = |_| {};
-    let mut ctx = ConnectCtx::new(&stop, Events::new(&mut sink, &flags), &mut host);
+    let mut host = TestHost::new();
+    host.stop().stop();
     let link = FakeLink::default();
-    let result = driver.connect_with(&mut ctx, link.clone());
+    let result = host.connect_with(|ctx| driver.connect_with(ctx, link.clone()));
     assert!(matches!(result, Err(Error::Stopped)), "{result:?}");
     assert!(link.wires().written.is_empty());
 }
@@ -1005,34 +950,13 @@ fn a_config_change_keeps_the_shot_numbers() {
         ..Config::default()
     });
 
-    let stop = Stop::new();
-    let mut host = Host(TurnHints::default());
-    let link = FakeLink::default();
-    let mut session = {
-        let mut sink = |_| {};
-        let mut ctx = ConnectCtx::new(&stop, Events::new(&mut sink, &rig.flags), &mut host);
-        rig.driver
-            .connect_with(&mut ctx, link.clone())
-            .expect("connects")
-    };
-    let mut seen = Vec::new();
-    {
-        let mut sink = |e| seen.push(e);
-        let mut out = Events::new(&mut sink, &rig.flags);
-        session
-            .poll(Duration::from_millis(5), &mut out)
-            .expect("poll");
-        link.feed(&testing::ball_notification(&ball));
-        session
-            .poll(Duration::from_millis(5), &mut out)
-            .expect("poll");
-        link.feed(&testing::club_notification(&club));
-        session
-            .poll(Duration::from_millis(5), &mut out)
-            .expect("poll");
-    }
+    let (session, link, _) = rig.reconnect();
+    rig.session = Some(session);
+    rig.link = link;
+    rig.poll();
+    let seen = rig.shot(&ball, &club);
     // The new config is in play: the session armed the pitching wedge.
-    assert_eq!(&link.selects()[0][3..5], &[0x0a, 0x02]);
+    assert_eq!(&rig.link.selects()[0][3..5], &[0x0a, 0x02]);
     let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = frp(&seen)
         .into_iter()
         .find(|e| matches!(e, FrpBody::ShotTrigger(_)))

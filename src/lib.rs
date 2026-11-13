@@ -20,7 +20,9 @@
 //! # Shape of the API
 //!
 //! Synchronous and caller-driven, like [`ironsight`] and [`10over`]: wrap a
-//! [`Transport`] in a [`Client`] and call [`Client::poll`] in a loop.
+//! [`Transport`] in a [`Client`] and call [`Client::poll`] in a loop
+//! ([`Client::poll_at`] takes the time as an input instead of reading the
+//! clock).
 //!
 //! ```no_run
 //! use allsquare::{Client, Event, Club, SpinMode};
@@ -77,7 +79,7 @@
 //! - **`config`**: the driver's settings, `allsquare::config::Config`, with
 //!   no BLE stack (for a settings form or a WebAssembly UI).
 //! - **`driver`**: `allsquare::driver::Omni`, a
-//!   [flightrelay](https://github.com/flightrelay/sdk-rust) `DeviceDriver`
+//!   [flightrelay](https://github.com/flightrelay/sdk-rust) `FrpDriver`
 //!   that runs the device for any host of that contract. Connecting needs a
 //!   BLE backend too.
 //! - **`frp`**: the `allsquare-frp` binary, which puts the device on a

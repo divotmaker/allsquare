@@ -1,4 +1,4 @@
-//! The Square Golf [`DeviceDriver`] (`driver` feature).
+//! The Square Golf [`FrpDriver`] (`driver` feature).
 //!
 //! [`Omni`] runs a Square Golf Omni for any host of flightrelay's driver
 //! contract: flightrelay's `FrpServer`, the `allsquare-frp`
@@ -60,8 +60,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flightrelay::config::{ConfigError, DriverConfig};
 use flightrelay::driver::{
-    Backoff, ConnectCtx, DeviceDriver, DeviceIdentity, DeviceSession, DriverInfo, Events, Level,
-    NoAction, RawProfile, SessionEnd, ShotIds, Stopped, TurnHints,
+    Activity, Backoff, ConnectCtx, DeviceIdentity, DriverInfo, Events, FrpDriver, FrpSession,
+    Level, NoAction, RawProfile, SessionEnd, ShotIds, Stopped, TurnHints,
 };
 use flightrelay::types::blockers;
 use flightrelay::{FrpBody, RawDir, RawFrame, Severity, Source, Velocity};
@@ -76,8 +76,8 @@ pub use convert::{club_data, face_impact, launch};
 
 const MANUFACTURER: &str = "Invant";
 
-/// How long a poll that read nothing waits before reading again.
-const IDLE_SLEEP: Duration = Duration::from_millis(5);
+/// Reads in a row that yield no event before a step reports idle.
+const IDLE_READS: u32 = 3;
 
 /// How long close waits for the disarm write before giving up on it.
 const DISARM_LIMIT: Duration = Duration::from_secs(2);
@@ -212,7 +212,7 @@ impl Omni {
     ) -> Result<OmniSession, Error> {
         ctx.tick()?;
         self.log_warnings(ctx);
-        let opened = Opened::new(Box::new(link), &self.settings)?;
+        let opened = Opened::new(Box::new(link), &self.settings, ctx.now())?;
         ctx.tick()?;
         Ok(self.session(ctx, opened))
     }
@@ -353,7 +353,8 @@ fn open_link(
     // A cancel ends the identity reads early. The session does not keep the
     // flag.
     link.set_cancel(Some(Arc::clone(cancel)));
-    let mut opened = Opened::new(link, settings)?;
+    // A real link has a real host, whose time is the system clock.
+    let mut opened = Opened::new(link, settings, Instant::now())?;
     if cancel.load(Ordering::Acquire) {
         opened.release();
         return Ok(None);
@@ -362,7 +363,7 @@ fn open_link(
     Ok(Some(opened))
 }
 
-impl DeviceDriver for Omni {
+impl FrpDriver for Omni {
     type Config = Config;
     type Error = Error;
     type Action = NoAction;
@@ -488,8 +489,9 @@ struct Opened {
 }
 
 impl Opened {
-    /// Read the identity over `link`. The link is released if that fails.
-    fn new(link: Box<dyn BleLink>, settings: &Settings) -> crate::Result<Self> {
+    /// Read the identity over `link` at `now`, which starts the client's
+    /// heartbeat and link watchdog. The link is released if that fails.
+    fn new(link: Box<dyn BleLink>, settings: &Settings, now: Instant) -> crate::Result<Self> {
         let log = WireLog::default();
         let name = link.name().to_owned();
         let address = link.address().to_owned();
@@ -498,7 +500,7 @@ impl Opened {
             log: log.clone(),
         });
         client.set_impact_calibration(settings.calibration.clone());
-        match client.poll() {
+        match client.poll_at(now) {
             Ok(Some(Event::Connected {
                 firmware,
                 hardware,
@@ -659,8 +661,8 @@ pub struct OmniSession {
     last_rx: Vec<u8>,
     /// When the pending shot's ball notification arrived (UTC ms).
     ball_at: Option<u64>,
-    /// Log lines from [`hints`](DeviceSession::hints), which has no sink;
-    /// sent on the next poll.
+    /// Log lines from [`hints`](FrpSession::hints), which has no sink;
+    /// sent on the next step.
     pending: Vec<(Level, String)>,
     link: LinkState,
 }
@@ -671,7 +673,7 @@ enum LinkState {
     Up,
     /// It failed and ended the session.
     Lost,
-    /// [`close`](DeviceSession::close) let it go.
+    /// [`close`](FrpSession::close) let it go.
     Released,
 }
 
@@ -846,36 +848,34 @@ impl OmniSession {
     }
 }
 
-impl DeviceSession for OmniSession {
+impl FrpSession for OmniSession {
     type Driver = Omni;
 
-    fn poll(&mut self, timeout: Duration, out: &mut Events<'_>) -> Result<(), Error> {
+    /// Send the pending log lines, arm once, then read until an event (or
+    /// a protocol error), which is [`Activity::Active`], or until three reads in a
+    /// row yield none, which is [`Activity::Idle`]. A read that yields no event
+    /// (a repeat, a club metrics request) is not idleness on its own. The
+    /// client's heartbeat and link watchdog run on `now`.
+    fn step(&mut self, now: Instant, out: &mut Events<'_>) -> Result<Activity, Error> {
         for (level, line) in self.pending.drain(..) {
             out.log(level, line);
         }
         if !self.armed {
             self.arm(out)?;
         }
-        let deadline = Instant::now() + timeout;
-        // A read that yields no event (a repeat, a club metrics request) is
-        // not idleness; a few in a row are.
         let mut idle = 0u32;
         loop {
-            let polled = self.client.poll();
+            let polled = self.client.poll_at(now);
             self.drain(out);
             match polled {
                 Ok(Some(event)) => {
-                    idle = 0;
                     self.handle(&event, out);
+                    return Ok(Activity::Active);
                 }
                 Ok(None) => {
                     idle += 1;
-                    let left = deadline.saturating_duration_since(Instant::now());
-                    if left.is_zero() {
-                        return Ok(());
-                    }
-                    if idle >= 3 {
-                        std::thread::sleep(left.min(IDLE_SLEEP));
+                    if idle >= IDLE_READS {
+                        return Ok(Activity::Idle);
                     }
                 }
                 Err(e @ (crate::Error::Disconnected | crate::Error::Transport(_))) => {
@@ -886,10 +886,8 @@ impl DeviceSession for OmniSession {
                 Err(e) => {
                     out.log(Level::Warn, format!("protocol error: {e}"));
                     out.alert(Severity::Warn, format!("Square Golf: {e}"));
+                    return Ok(Activity::Active);
                 }
-            }
-            if Instant::now() >= deadline {
-                return Ok(());
             }
         }
     }
@@ -968,7 +966,7 @@ impl DeviceSession for OmniSession {
 }
 
 impl Drop for OmniSession {
-    /// A session dropped without [`close`](DeviceSession::close) still lets
+    /// A session dropped without [`close`](FrpSession::close) still lets
     /// the device go.
     fn drop(&mut self) {
         if self.link != LinkState::Released {

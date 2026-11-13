@@ -2,7 +2,8 @@
 //!
 //! [`Client`] owns the sequence counter, heartbeat timing, duplicate
 //! suppression and shot correlation. It is synchronous and caller-driven — call
-//! [`Client::poll`] in a loop; it never blocks longer than the transport does.
+//! [`Client::poll_at`] (or [`Client::poll`], which reads the clock) in a loop;
+//! it never blocks longer than the transport does.
 
 use std::collections::VecDeque;
 use std::io;
@@ -136,6 +137,9 @@ pub enum Event {
     Alignment(f64),
 }
 
+/// How often a heartbeat is sent.
+const HEARTBEAT: Duration = Duration::from_secs(HEARTBEAT_SECS);
+
 /// Silence after which the link is presumed dead: three heartbeat intervals.
 /// The device acknowledges every heartbeat, so a healthy link never stays
 /// quiet this long.
@@ -163,13 +167,10 @@ pub struct Client<T: Transport> {
     last_rx: Vec<u8>,
     queue: VecDeque<Event>,
     last_heartbeat: Instant,
-    heartbeat_interval: Duration,
     /// When anything was last received, duplicates included.
     last_data: Instant,
     /// Heartbeats sent since anything was last received.
     unanswered: u32,
-    /// Silence after which the link is presumed dead.
-    link_timeout: Duration,
     state: Option<DeviceState>,
     /// Ball metrics awaiting their club packet.
     pending_shot: Option<BallMetrics>,
@@ -188,17 +189,17 @@ pub struct Client<T: Transport> {
 impl<T: Transport> Client<T> {
     /// Wrap a connected transport.
     pub fn new(transport: T) -> Self {
+        // The timers start when the first poll reads the identity.
+        let now = Instant::now();
         Self {
             transport,
             phase: Phase::Connecting,
             seq: 0,
             last_rx: Vec::new(),
             queue: VecDeque::new(),
-            last_heartbeat: Instant::now(),
-            heartbeat_interval: Duration::from_secs(HEARTBEAT_SECS),
-            last_data: Instant::now(),
+            last_heartbeat: now,
+            last_data: now,
             unanswered: 0,
-            link_timeout: LINK_TIMEOUT,
             state: None,
             pending_shot: None,
             awaiting_club: false,
@@ -305,10 +306,20 @@ impl<T: Transport> Client<T> {
         self.state
     }
 
-    /// Advance the client. Returns the next event, if any.
+    /// [`poll_at`](Self::poll_at) at [`Instant::now`].
     ///
-    /// Call this in a loop. It reads at most one notification per call and
-    /// sends the heartbeat when due.
+    /// # Errors
+    /// As [`poll_at`](Self::poll_at).
+    pub fn poll(&mut self) -> Result<Option<Event>> {
+        self.poll_at(Instant::now())
+    }
+
+    /// Advance the client to `now`. Returns the next event, if any.
+    ///
+    /// Call this in a loop with the current time; `now` must not go
+    /// backwards. It reads at most one notification per call and sends the
+    /// heartbeat when one is due at `now`. It reads no clock of its own, so a
+    /// test steps time by passing it.
     ///
     /// The device acknowledges every heartbeat, so a link that has delivered
     /// nothing for three heartbeat intervals (15 s) is treated as lost, even
@@ -318,20 +329,20 @@ impl<T: Transport> Client<T> {
     /// [`Error::Disconnected`] if the device closed the link or went silent,
     /// or a transport error. Malformed frames are skipped rather than
     /// surfaced.
-    pub fn poll(&mut self) -> Result<Option<Event>> {
+    pub fn poll_at(&mut self, now: Instant) -> Result<Option<Event>> {
         if let Some(ev) = self.queue.pop_front() {
             return Ok(Some(ev));
         }
 
         if self.phase == Phase::Connecting {
-            let ev = self.read_identity()?;
+            let ev = self.read_identity(now)?;
             self.phase = Phase::Active;
             return Ok(Some(ev));
         }
 
-        if self.last_heartbeat.elapsed() >= self.heartbeat_interval {
+        if now.saturating_duration_since(self.last_heartbeat) >= HEARTBEAT {
             self.send(Command::Heartbeat)?;
-            self.last_heartbeat = Instant::now();
+            self.last_heartbeat = now;
             self.unanswered = self.unanswered.saturating_add(1);
         }
 
@@ -341,7 +352,7 @@ impl<T: Transport> Client<T> {
             Ok(n) => n,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                 if self.unanswered >= UNANSWERED_HEARTBEATS
-                    && self.last_data.elapsed() >= self.link_timeout
+                    && now.saturating_duration_since(self.last_data) >= LINK_TIMEOUT
                 {
                     return Err(Error::Disconnected);
                 }
@@ -350,7 +361,7 @@ impl<T: Transport> Client<T> {
             Err(e) => return Err(e.into()),
         };
         let data = &buf[..n];
-        self.last_data = Instant::now();
+        self.last_data = now;
         self.unanswered = 0;
 
         // The device sends every notification twice, byte-identical. Without
@@ -370,7 +381,7 @@ impl<T: Transport> Client<T> {
         }
     }
 
-    fn read_identity(&mut self) -> Result<Event> {
+    fn read_identity(&mut self, now: Instant) -> Result<Event> {
         let fw = self
             .transport
             .read_characteristic(protocol::uuid::FW_VERSION)?;
@@ -393,10 +404,10 @@ impl<T: Transport> Client<T> {
             .unwrap_or_default();
         // The app sends this first; the device answers with a 0x06.
         self.send(Command::Query)?;
-        self.last_heartbeat = Instant::now();
+        self.last_heartbeat = now;
         self.send(Command::Heartbeat)?;
         // The link watchdog starts now.
-        self.last_data = Instant::now();
+        self.last_data = now;
         self.unanswered = 1;
         Ok(Event::Connected {
             firmware: Firmware::parse(&String::from_utf8_lossy(&fw)),
@@ -737,61 +748,73 @@ mod tests {
         assert!(club_at < detect_at, "club must be selected before arming");
     }
 
-    /// Poll for `span`, returning the first error.
-    fn poll_for<T: Transport>(c: &mut Client<T>, span: Duration) -> Option<Error> {
-        let end = Instant::now() + span;
-        while Instant::now() < end {
-            if let Err(e) = c.poll() {
-                return Some(e);
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        None
+    /// Poll once at each of `times`, returning the first error and when.
+    fn poll_at_each<T: Transport>(
+        c: &mut Client<T>,
+        times: impl IntoIterator<Item = Instant>,
+    ) -> Option<(Instant, Error)> {
+        times
+            .into_iter()
+            .find_map(|t| c.poll_at(t).err().map(|e| (t, e)))
     }
 
-    /// A client with a heartbeat and link timeout short enough to test.
-    fn fast_client(mock: Mock) -> Client<Mock> {
-        let mut c = Client::new(mock);
-        c.heartbeat_interval = Duration::from_millis(10);
-        c.link_timeout = Duration::from_millis(30);
-        c
+    /// `from`, then every `step` after it up to `to`.
+    fn every(from: Instant, to: Instant, step: Duration) -> impl Iterator<Item = Instant> {
+        std::iter::successors(Some(from), move |t| Some(*t + step)).take_while(move |t| *t <= to)
+    }
+
+    fn heartbeats(c: &mut Client<Mock>) -> usize {
+        c.transport_mut()
+            .written
+            .iter()
+            .filter(|w| w[1] == 0x83)
+            .count()
     }
 
     #[test]
-    fn silent_link_is_reported_disconnected() {
-        let mut c = fast_client(Mock::with(&[]));
-        let err = poll_for(&mut c, Duration::from_millis(500));
-        assert!(
-            matches!(err, Some(Error::Disconnected)),
-            "expected the watchdog to trip, got {err:?}"
+    fn a_silent_link_is_lost_after_the_link_timeout() {
+        let mut c = Client::new(Mock::with(&[]));
+        let t0 = Instant::now();
+        assert!(matches!(c.poll_at(t0), Ok(Some(Event::Connected { .. }))));
+        let ms = Duration::from_millis(1);
+        let quiet = poll_at_each(
+            &mut c,
+            every(t0, t0 + LINK_TIMEOUT.saturating_sub(ms), ms * 100),
         );
+        assert!(quiet.is_none(), "tripped early: {quiet:?}");
+        // Heartbeats at 0, 5 and 10 s went unanswered.
+        assert_eq!(heartbeats(&mut c), 3);
+        let err = c.poll_at(t0 + LINK_TIMEOUT);
+        assert!(matches!(err, Err(Error::Disconnected)), "{err:?}");
     }
 
     #[test]
     fn acknowledged_heartbeats_keep_the_link_alive() {
-        let mut c = fast_client(Mock {
+        let mut c = Client::new(Mock {
             acks_heartbeats: true,
             ..Mock::default()
         });
-        let err = poll_for(&mut c, Duration::from_millis(300));
+        let t0 = Instant::now();
+        let span = LINK_TIMEOUT * 4;
+        let err = poll_at_each(&mut c, every(t0, t0 + span, Duration::from_millis(100)));
         assert!(err.is_none(), "watchdog tripped on a live link: {err:?}");
-        assert!(
-            c.transport_mut().written.len() > 10,
-            "expected regular heartbeats"
-        );
+        // One at the identity read, then one per interval.
+        assert_eq!(heartbeats(&mut c), 1 + 12);
     }
 
     #[test]
     fn a_pause_in_polling_is_not_a_dead_link() {
         // A caller that stops polling also stops heartbeats. The silence that
         // causes must not count against the device.
-        let mut c = fast_client(Mock {
+        let mut c = Client::new(Mock {
             acks_heartbeats: true,
             ..Mock::default()
         });
-        assert!(poll_for(&mut c, Duration::from_millis(20)).is_none());
-        std::thread::sleep(Duration::from_millis(100));
-        let err = poll_for(&mut c, Duration::from_millis(100));
+        let t0 = Instant::now();
+        let ms = Duration::from_millis(1);
+        assert!(poll_at_each(&mut c, every(t0, t0 + ms * 10, ms)).is_none());
+        let back = t0 + LINK_TIMEOUT * 4;
+        let err = poll_at_each(&mut c, every(back, back + ms * 10, ms));
         assert!(err.is_none(), "watchdog tripped after a pause: {err:?}");
     }
 
