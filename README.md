@@ -20,12 +20,12 @@ BLE protocol and exposes shot data through a synchronous, poll-based API:
 - **`ble::connect`** — platform-agnostic BLE transport. BlueZ on Linux
   (`bluez` feature), btleplug on Windows/macOS (`btleplug` feature).
 - **`driver::Omni`** — a [flightrelay](https://github.com/flightrelay/sdk-rust)
-  `DeviceDriver` (`driver` feature): connect, arm, follow the controller's club
-  and hand, report shots, release the device. Any host of that contract can
+  `DeviceDriver` (`driver` feature): connect, arm, follow the club and hand
+  of each `golfer.turn`, report shots, release the device. Any host of that contract can
   run it; its settings are `config::Config` (`config` feature, no BLE stack).
 - **`allsquare-frp`** — a [Flight Relay Protocol](https://github.com/flightrelay/spec)
-  (FRP 0.2.0) device binary (`frp` feature plus a BLE backend) that serves the
-  driver to FRP controllers.
+  (FRP 0.3.0) launch monitor binary (`frp` feature plus a BLE backend) that
+  puts the driver on an FRP bus.
 
 ## Legal Basis — DMCA Section 1201(f)
 
@@ -182,7 +182,8 @@ The fixtures describe a synthetic device and carry no device identity.
 
 With the `driver` feature too, `driver::Omni::connect_with` runs a driver
 session over a link of the test's own (a `driver::BleLink`), so a test can feed
-it fixtures and check the FRP events, the commands written and the release.
+it fixtures and check the FRP messages and status, the commands written and
+the release.
 
 ## FRP binary: `allsquare-frp`
 
@@ -196,19 +197,24 @@ allsquare-frp [--config <path>] [--target <listen-addr | ws://host:port/frp>]
               [--set <key>=<value>]... [--log <info|debug|trace>] [--help]
 ```
 
-- `--target`: an address to listen on for controllers (default `0.0.0.0:5880`),
-  or a `ws://` URL of a controller to dial, e.g. `ws://flighthook:5880/frp`.
-  Several controllers can connect at once.
-- `--config`: a TOML file holding the settings below at the top level.
+- `--target`: an address to listen on (default `0.0.0.0:5880`; several peers
+  can connect at once), or a `ws://` URL of a hub to dial, e.g.
+  `ws://flighthook:5880/frp`.
+- `--config`: a TOML file holding the settings below at the top level, and
+  the runner's `[frp]` table: `actor_id`, the actor's id on the bus
+  (generated on the first run and written into the file, so it survives
+  restarts; without `--config` it lasts for the run), and `raw_frames`
+  (default `false`).
 - `--set key=value`: a setting over the file, e.g. `--set club=PW`,
-  `--set address=SquareGolf(CD01)`, `--set dot_bottom_to_face_center_mm.7I=21`.
+  `--set address=SquareGolf(CD01)`, `--set dot_bottom_to_face_center_mm.7I=21`;
+  `--set frp.raw_frames=true` for the runner.
 - `--help` lists every setting with its default. Ctrl-C disarms and
   disconnects the device before exiting.
 
 | Setting | Default | |
 |---|---|---|
 | `address` | unset | BLE address, macOS peripheral UUID or advertised name to pin; unset or blank takes the first device found |
-| `club` | `7I` | FRP club code armed until a controller names a club |
+| `club` | `7I` | FRP club code armed until a `golfer.turn` names a club |
 | `advanced_spin` | `true` | the device's advanced spin measurement |
 | `discard_non_putting_zero_spin` | `true` | drop shots that read zero spin unless the putter is in play |
 | `dot_bottom_to_face_center_mm` | built-in | per-club face impact calibration, keyed by club code (see Face impact) |
@@ -216,37 +222,57 @@ allsquare-frp [--config <path>] [--target <listen-addr | ws://host:port/frp>]
 Clubs are FRP codes read leniently (`7i`, `I7`, `pw`, `52`); a code that names
 no club is ignored with a warning.
 
-What goes out over FRP 0.2.0:
+What goes out over FRP 0.3.0:
 
-- `device_telemetry` with `source: measured` and the identity (manufacturer
-  Invant, model, launch monitor firmware) before the first shot; then `ready`,
-  `device_state`, `battery_pct` and `zero_spin_discards`. An unknown charge
-  state (or no battery) reports no level: `battery_pct` is not sent, or is
-  sent once as an empty value to clear a level reported earlier.
-- Per shot: `shot_trigger` with a `timestamp` (when the ball notification
-  arrived), `launch`, `club_path` and `face_impact` when the club was tracked,
-  `shot_finished`. Launch only: no `flight_result`. A total spin of 0 (putts) is
-  sent as `total_spin_rpm: 0` with no `spin_axis`.
+- `bus.actor` with the role `launch_monitor` and a `device` block with
+  `source: measured` and the identity (manufacturer Invant, model, launch
+  monitor firmware), and `battery_pct`. `blockers` is empty while the device
+  has a ball and is ready, `no_ball` while it looks for one, and `not_armed`
+  otherwise. Telemetry keys: `device_state` (`waiting`, `ready`, `recording`,
+  `processing`) and `zero_spin_discards`. An unknown charge state (or no
+  battery) is not a level: the battery leaves the actor.
+- Per shot: `shot.trigger` with a `timestamp` (when the ball notification
+  arrived), `shot.launch`, `shot.club` and `shot.impact` when the club was
+  tracked, `shot.finished`. Launch only: no `shot.flight`. A total spin of 0
+  (putts) is sent as `total_spin_rpm: 0` with no `spin_axis`.
 - A zero-spin read with any club but the putter is a misread: it is dropped
   with a warning alert and counted in `zero_spin_discards`, and takes no shot
   number.
-- `set_detection_mode`: `club` and `handed` select the club on the device,
-  only when one of them changes. A club the device has no code for is armed as
-  the nearest club of the same kind (MD → DR, 2W/4W → 3W, 1H/2H → 3H, 1I/2I →
+- `golfer.turn`: its `club` and `handedness` select the club on the device,
+  only when one of them changes; a turn without a club or a hand leaves the
+  device's current one. A club the device has no code for is armed as the
+  nearest club of the same kind (MD → DR, 2W/4W → 3W, 1H/2H → 3H, 1I/2I →
   3I, …). `mode` is ignored: putting and chipping differ only by club.
-- `raw_frame` on request: one per notification (`notify 11 02`, or the family
+- `shot.raw` with `frp.raw_frames = true`: one per notification (`notify 11 02`, or the family
   byte alone outside the `0x11` family, e.g. `notify 91`) or command
   (`cmd 82`), stamped with the time it reached the BLE stack or was handed to
   it. Heartbeats, heartbeat acks, query replies and notifications this crate
   does not recognize are never sent.
 - Stopping disarms the device and disconnects it within 5 s.
 
+### Migrating from 0.4
+
+This release moves to flightrelay 0.6 (FRP 0.3.0), the actor bus. A FRP
+0.2.0 endpoint does not interoperate with it, so the other side moves to FRP
+0.3.0 too. The device's behavior is unchanged: same arming, same settings,
+same shots.
+
+| | 0.4 | This release |
+|---|---|---|
+| Shot messages | `shot_trigger`, `launch`, `club_path`, `face_impact`, `shot_finished`, `raw_frame`, `alert` | `shot.trigger`, `shot.launch`, `shot.club`, `shot.impact`, `shot.finished`, `shot.raw`, `bus.alert` |
+| Readiness | `device_telemetry` `ready`, true only while the device has a ball and is ready | `blockers` of the actor's `bus.actor`: empty then, `no_ball` while the device looks for a ball, `not_armed` otherwise |
+| Identity and battery | `device_telemetry` (`battery_pct` as text, an empty value clears it) | the `device` block of `bus.actor` (`battery_pct` a number; the host clears it when the session ends) |
+| Club and hand | `set_detection_mode` (`club`, `handed`) | the hints of each `golfer.turn` (`club`, `handedness`) |
+| Raw frames | on when a controller asks | on with `--set frp.raw_frames=true` (the `[frp]` table of the config file) |
+| `allsquare-frp` identity | the device | an actor id, generated on the first run and saved in the config file's `[frp]` table |
+| Driver API | `DeviceSession::command(&DeviceCommand)` | `DeviceSession::hints(&TurnHints)` |
+
 ### Migrating from 0.3
 
-This release moves to flightrelay 0.5 (FRP 0.2.0). Controllers move to FRP
+0.4 moves to flightrelay 0.5 (FRP 0.2.0). Controllers move to FRP
 0.2.0 too; a 0.1.0 peer cannot handshake.
 
-| | 0.3 | This release |
+| | 0.3 | 0.4 |
 |---|---|---|
 | `allsquare-frp` arguments | `allsquare-frp [frp-target] [club]` | named flags only: `allsquare-frp --target <frp-target> --set club=PW` |
 | FRP messages | `ball_flight`; telemetry without `source`; triggers without a time | `launch`; telemetry carries `source`; triggers carry a `timestamp`; raw frames on request |

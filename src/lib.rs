@@ -80,8 +80,9 @@
 //!   [flightrelay](https://github.com/flightrelay/sdk-rust) `DeviceDriver`
 //!   that runs the device for any host of that contract. Connecting needs a
 //!   BLE backend too.
-//! - **`frp`**: the `allsquare-frp` binary, which serves the device to
-//!   [Flight Relay Protocol](https://github.com/flightrelay/spec) controllers.
+//! - **`frp`**: the `allsquare-frp` binary, which puts the device on a
+//!   [Flight Relay Protocol](https://github.com/flightrelay/spec) bus as a
+//!   launch monitor actor.
 //! - **`serde`**: serde derives on the public data types.
 //! - **`testing`**: see below.
 //!

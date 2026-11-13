@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use flightrelay::driver::{ConnectHost, DeviceEvent, HostFlags, Stop};
+use flightrelay::driver::{ConnectHost, DeviceEvent, HostFlags, StatusChange, Stop};
+use flightrelay::{BusAlert, ShotTrigger};
 use flightrelay::{ClubData, Distance, Handedness, Launch};
 
 use super::*;
@@ -115,11 +116,11 @@ impl BleLink for FakeLink {
     }
 }
 
-struct Host(DeviceCommand);
+struct Host(TurnHints);
 
 impl ConnectHost for Host {
     fn tick(&mut self) {}
-    fn latched(&self) -> &DeviceCommand {
+    fn hints(&self) -> &TurnHints {
         &self.0
     }
 }
@@ -134,12 +135,12 @@ struct Rig {
 }
 
 impl Rig {
-    fn new(config: Config, latched: DeviceCommand) -> Self {
+    fn new(config: Config, hints: TurnHints) -> Self {
         let flags = HostFlags::new();
         let mut driver = Omni::new(config).expect("valid config");
         let link = FakeLink::default();
         let stop = Stop::new();
-        let mut host = Host(latched);
+        let mut host = Host(hints);
         let mut seen = Vec::new();
         let session = {
             let mut sink = |e| seen.push(e);
@@ -196,7 +197,7 @@ impl Rig {
     }
 }
 
-fn frp(events: &[DeviceEvent]) -> Vec<&FrpEvent> {
+fn frp(events: &[DeviceEvent]) -> Vec<&FrpBody> {
     events
         .iter()
         .filter_map(|e| match e {
@@ -210,12 +211,12 @@ fn kinds(events: &[DeviceEvent]) -> Vec<&'static str> {
     frp(events)
         .into_iter()
         .filter_map(|e| match e {
-            FrpEvent::ShotTrigger { .. } => Some("trigger"),
-            FrpEvent::Launch { .. } => Some("launch"),
-            FrpEvent::FlightResult { .. } => Some("flight"),
-            FrpEvent::ClubPath { .. } => Some("club"),
-            FrpEvent::FaceImpact { .. } => Some("impact"),
-            FrpEvent::ShotFinished { .. } => Some("finished"),
+            FrpBody::ShotTrigger(_) => Some("trigger"),
+            FrpBody::ShotLaunch(_) => Some("launch"),
+            FrpBody::ShotFlight(_) => Some("flight"),
+            FrpBody::ShotClub(_) => Some("club"),
+            FrpBody::ShotImpact(_) => Some("impact"),
+            FrpBody::ShotFinished(_) => Some("finished"),
             _ => None,
         })
         .collect()
@@ -225,19 +226,50 @@ fn launch_of(events: &[DeviceEvent]) -> Launch {
     frp(events)
         .into_iter()
         .find_map(|e| match e {
-            FrpEvent::Launch { launch, .. } => Some(launch.clone()),
+            FrpBody::ShotLaunch(m) => Some(m.launch.clone()),
             _ => None,
         })
         .expect("a launch")
 }
 
-fn telemetry(events: &[DeviceEvent], key: &str) -> Vec<String> {
-    frp(events)
-        .into_iter()
+fn changes(events: &[DeviceEvent]) -> Vec<&StatusChange> {
+    events
+        .iter()
         .filter_map(|e| match e {
-            FrpEvent::DeviceTelemetry {
-                telemetry: Some(t), ..
-            } => t.get(key).cloned(),
+            DeviceEvent::StatusChange(c) => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every value of one telemetry key, in order.
+fn telemetry(events: &[DeviceEvent], key: &str) -> Vec<String> {
+    changes(events)
+        .into_iter()
+        .filter_map(|c| match c {
+            StatusChange::Telemetry(t) => t.get(key).cloned().flatten(),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every blockers list, in order, comma-separated.
+fn blockers(events: &[DeviceEvent]) -> Vec<String> {
+    changes(events)
+        .into_iter()
+        .filter_map(|c| match c {
+            StatusChange::Blockers(b) => Some(b.join(",")),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every battery change, in order: a level, or `None` for no reading.
+fn battery(events: &[DeviceEvent]) -> Vec<Option<u8>> {
+    changes(events)
+        .into_iter()
+        .filter_map(|c| match c {
+            StatusChange::Battery(b) => Some(*b),
             _ => None,
         })
         .collect()
@@ -292,7 +324,7 @@ fn putt() -> (BallMetrics, ClubMetrics) {
 
 #[test]
 fn connect_reports_identity_without_publishing_the_address() {
-    let rig = Rig::new(Config::default(), DeviceCommand::default());
+    let rig = Rig::new(Config::default(), TurnHints::default());
     let id = rig.session.as_ref().expect("open").identity();
     assert_eq!(id.device, "SquareGolf(CD01)");
     assert_eq!(id.manufacturer.as_deref(), Some("Invant"));
@@ -317,9 +349,9 @@ fn connect_reports_identity_without_publishing_the_address() {
 
 #[test]
 fn the_first_poll_arms_with_the_config_club() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     let events = rig.poll();
-    assert_eq!(telemetry(&events, "ready"), ["false"]);
+    assert_eq!(blockers(&events), ["not_armed"]);
     let selects = rig.link.selects();
     assert_eq!(selects.len(), 1);
     // 7-iron (07, irons 02), right-handed (00).
@@ -330,16 +362,16 @@ fn the_first_poll_arms_with_the_config_club() {
 }
 
 #[test]
-fn the_latched_club_and_hand_win_over_the_config() {
-    let latched = DeviceCommand::default()
+fn the_hinted_club_and_hand_win_over_the_config() {
+    let hints = TurnHints::default()
         .with_club(flightrelay::Club::Putter)
-        .with_handed(Handedness::Left);
+        .with_handedness(Handedness::Left);
     let config = Config {
         club: "DR".into(),
         advanced_spin: false,
         ..Config::default()
     };
-    let mut rig = Rig::new(config, latched);
+    let mut rig = Rig::new(config, hints);
     rig.poll();
     let selects = rig.link.selects();
     assert_eq!(
@@ -353,7 +385,7 @@ fn the_latched_club_and_hand_win_over_the_config() {
 
 #[test]
 fn a_shot_is_sent_once_complete_with_a_timestamp() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     let (ball, club) = iron();
     let events = rig.shot(&ball, &club);
@@ -361,7 +393,7 @@ fn a_shot_is_sent_once_complete_with_a_timestamp() {
         kinds(&events),
         ["trigger", "launch", "club", "impact", "finished"]
     );
-    let FrpEvent::ShotTrigger { key, timestamp } = frp(&events)[0] else {
+    let FrpBody::ShotTrigger(ShotTrigger { key, timestamp }) = frp(&events)[0] else {
         panic!("{events:?}");
     };
     assert_eq!(key.shot_number, 1);
@@ -374,7 +406,7 @@ fn a_shot_is_sent_once_complete_with_a_timestamp() {
     let club_data = frp(&events)
         .into_iter()
         .find_map(|e| match e {
-            FrpEvent::ClubPath { club, .. } => Some(club.clone()),
+            FrpBody::ShotClub(m) => Some(m.club.clone()),
             _ => None,
         })
         .expect("club");
@@ -393,7 +425,7 @@ fn a_shot_is_sent_once_complete_with_a_timestamp() {
     let impact = frp(&events)
         .into_iter()
         .find_map(|e| match e {
-            FrpEvent::FaceImpact { impact, .. } => Some(impact.clone()),
+            FrpBody::ShotImpact(m) => Some(m.impact.clone()),
             _ => None,
         })
         .expect("impact");
@@ -405,7 +437,7 @@ fn a_shot_is_sent_once_complete_with_a_timestamp() {
 
     // The next shot takes the next number.
     let events = rig.shot(&ball, &club);
-    let FrpEvent::ShotTrigger { key, .. } = frp(&events)[0] else {
+    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = frp(&events)[0] else {
         panic!("{events:?}");
     };
     assert_eq!(key.shot_number, 2);
@@ -413,7 +445,7 @@ fn a_shot_is_sent_once_complete_with_a_timestamp() {
 
 #[test]
 fn the_trigger_and_frames_carry_the_arrival_time() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.flags.set_wants_raw(true);
     rig.poll();
     let (ball, club) = iron();
@@ -431,9 +463,9 @@ fn the_trigger_and_frames_carry_the_arrival_time() {
     let mut events = rig.poll();
     rig.link.feed(&testing::club_notification(&club));
     events.extend(rig.poll());
-    let FrpEvent::ShotTrigger { key, timestamp } = frp(&events)
+    let FrpBody::ShotTrigger(ShotTrigger { key, timestamp }) = frp(&events)
         .into_iter()
-        .find(|e| matches!(e, FrpEvent::ShotTrigger { .. }))
+        .find(|e| matches!(e, FrpBody::ShotTrigger(_)))
         .expect("trigger")
     else {
         unreachable!()
@@ -443,9 +475,7 @@ fn the_trigger_and_frames_carry_the_arrival_time() {
     let ball_frames: Vec<Option<u64>> = frp(&events)
         .into_iter()
         .filter_map(|e| match e {
-            FrpEvent::RawFrame(f) if f.label.as_deref() == Some("notify 11 02") => {
-                Some(f.timestamp)
-            }
+            FrpBody::ShotRaw(f) if f.label.as_deref() == Some("notify 11 02") => Some(f.timestamp),
             _ => None,
         })
         .collect();
@@ -454,7 +484,7 @@ fn the_trigger_and_frames_carry_the_arrival_time() {
 
 #[test]
 fn a_poll_returns_near_its_timeout() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     for timeout in [Duration::ZERO, Duration::from_millis(20)] {
         let started = Instant::now();
@@ -476,8 +506,8 @@ fn a_poll_returns_near_its_timeout() {
 
 #[test]
 fn a_zero_spin_putt_sends_total_zero_and_no_axis() {
-    let latched = DeviceCommand::default().with_club(flightrelay::Club::Putter);
-    let mut rig = Rig::new(Config::default(), latched);
+    let hints = TurnHints::default().with_club(flightrelay::Club::Putter);
+    let mut rig = Rig::new(Config::default(), hints);
     rig.poll();
     let (ball, club) = putt();
     let events = rig.shot(&ball, &club);
@@ -491,7 +521,7 @@ fn a_zero_spin_putt_sends_total_zero_and_no_axis() {
 
 #[test]
 fn a_zero_spin_misread_is_discarded() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     let (ball, _) = putt();
     let (_, club) = iron();
@@ -506,7 +536,9 @@ fn a_zero_spin_misread_is_discarded() {
     let alert = frp(&events)
         .into_iter()
         .find_map(|e| match e {
-            FrpEvent::Alert { severity, message } => Some((*severity, message.clone())),
+            FrpBody::BusAlert(BusAlert {
+                severity, message, ..
+            }) => Some((*severity, message.clone())),
             _ => None,
         })
         .expect("alert");
@@ -522,7 +554,7 @@ fn a_zero_spin_misread_is_discarded() {
     assert_eq!(telemetry(&events, "zero_spin_discards"), ["2"]);
     let (ball, club) = iron();
     let events = rig.shot(&ball, &club);
-    let FrpEvent::ShotTrigger { key, .. } = frp(&events)[0] else {
+    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = frp(&events)[0] else {
         panic!("{events:?}");
     };
     assert_eq!(key.shot_number, 1);
@@ -534,7 +566,7 @@ fn the_discard_can_be_turned_off() {
         discard_non_putting_zero_spin: false,
         ..Config::default()
     };
-    let mut rig = Rig::new(config, DeviceCommand::default());
+    let mut rig = Rig::new(config, TurnHints::default());
     rig.poll();
     let (ball, club) = putt();
     let events = rig.shot(&ball, &club);
@@ -543,27 +575,27 @@ fn the_discard_can_be_turned_off() {
 
 #[test]
 fn one_club_change_after_the_arm_is_one_select() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     assert_eq!(rig.link.selects().len(), 1);
-    // A host sends the club twice for one change (its club and its
-    // detection mode messages), and the hand once more.
-    let pw = DeviceCommand::default().with_club(flightrelay::Club::PitchingWedge);
-    rig.session().command(&pw).expect("command");
+    // Hints that name the club, the same club with a mode, then only the
+    // hand (which the device already has) are one change.
+    let pw = TurnHints::default().with_club(flightrelay::Club::PitchingWedge);
+    rig.session().hints(&pw).expect("hints");
     rig.session()
-        .command(&pw.with_mode(flightrelay::DetectionMode::Full))
-        .expect("command");
+        .hints(&pw.with_mode(flightrelay::Mode::Full))
+        .expect("hints");
     rig.session()
-        .command(&DeviceCommand::default().with_handed(Handedness::Right))
-        .expect("command");
+        .hints(&TurnHints::default().with_handedness(Handedness::Right))
+        .expect("hints");
     let selects = rig.link.selects();
     assert_eq!(selects.len(), 2, "{selects:02x?}");
     assert_eq!(&selects[1][3..6], &[0x0a, 0x02, 0x00]);
 
     // A hand change reselects the same club with the new hand.
     rig.session()
-        .command(&DeviceCommand::default().with_handed(Handedness::Left))
-        .expect("command");
+        .hints(&TurnHints::default().with_handedness(Handedness::Left))
+        .expect("hints");
     let selects = rig.link.selects();
     assert_eq!(selects.len(), 3);
     assert_eq!(&selects[2][3..6], &[0x0a, 0x02, 0x01]);
@@ -577,25 +609,25 @@ fn one_club_change_after_the_arm_is_one_select() {
 
 #[test]
 fn a_club_without_a_code_selects_the_nearest() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     rig.session()
-        .command(&DeviceCommand::default().with_club(flightrelay::Club::MiniDriver))
-        .expect("command");
+        .hints(&TurnHints::default().with_club(flightrelay::Club::MiniDriver))
+        .expect("hints");
     rig.session()
-        .command(&DeviceCommand::default().with_club(flightrelay::Club::Iron2))
-        .expect("command");
+        .hints(&TurnHints::default().with_club(flightrelay::Club::Iron2))
+        .expect("hints");
     let selects = rig.link.selects();
     assert_eq!(&selects[1][3..5], &[0x01, 0x00], "MD -> driver");
     assert_eq!(&selects[2][3..5], &[0x03, 0x02], "2I -> 3I");
 }
 
 #[test]
-fn a_command_before_the_arm_is_only_recorded() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+fn hints_before_the_arm_are_only_recorded() {
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.session()
-        .command(&DeviceCommand::default().with_club(flightrelay::Club::SandWedge))
-        .expect("command");
+        .hints(&TurnHints::default().with_club(flightrelay::Club::SandWedge))
+        .expect("hints");
     assert!(rig.link.selects().is_empty());
     rig.poll();
     let selects = rig.link.selects();
@@ -605,11 +637,11 @@ fn a_command_before_the_arm_is_only_recorded() {
 
 #[test]
 fn the_putter_exemption_follows_the_club_in_play() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     rig.session()
-        .command(&DeviceCommand::default().with_club(flightrelay::Club::Putter))
-        .expect("command");
+        .hints(&TurnHints::default().with_club(flightrelay::Club::Putter))
+        .expect("hints");
     let (ball, club) = putt();
     assert_eq!(
         kinds(&rig.shot(&ball, &club)),
@@ -619,15 +651,11 @@ fn the_putter_exemption_follows_the_club_in_play() {
 
 #[test]
 fn raw_frames_only_when_wanted_and_never_private_ones() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     let (ball, club) = iron();
     let quiet = rig.shot(&ball, &club);
-    assert!(
-        !frp(&quiet)
-            .iter()
-            .any(|e| matches!(e, FrpEvent::RawFrame(_)))
-    );
+    assert!(!frp(&quiet).iter().any(|e| matches!(e, FrpBody::ShotRaw(_))));
 
     rig.flags.set_wants_raw(true);
     rig.link.feed(&testing::heartbeat_ack(DeviceState::Ready));
@@ -637,7 +665,7 @@ fn raw_frames_only_when_wanted_and_never_private_ones() {
     let frames: Vec<&RawFrame> = frp(&events)
         .into_iter()
         .filter_map(|e| match e {
-            FrpEvent::RawFrame(f) => Some(f),
+            FrpBody::ShotRaw(f) => Some(f),
             _ => None,
         })
         .collect();
@@ -665,11 +693,11 @@ fn raw_frames_only_when_wanted_and_never_private_ones() {
     // the club notification follows it.
     let trigger = events
         .iter()
-        .position(|e| matches!(e, DeviceEvent::Frp(FrpEvent::ShotTrigger { .. })))
+        .position(|e| matches!(e, DeviceEvent::Frp(FrpBody::ShotTrigger(_))))
         .expect("trigger");
     let before = events[..trigger]
         .iter()
-        .filter(|e| matches!(e, DeviceEvent::Frp(FrpEvent::RawFrame(_))))
+        .filter(|e| matches!(e, DeviceEvent::Frp(FrpBody::ShotRaw(_))))
         .count();
     assert_eq!(before, 4);
     // The heartbeat ack and the query reply went to the trace log.
@@ -682,34 +710,54 @@ fn raw_frames_only_when_wanted_and_never_private_ones() {
 }
 
 #[test]
-fn state_and_battery_become_telemetry() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+fn state_and_battery_become_status() {
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     rig.link.feed(&testing::heartbeat_ack(DeviceState::Ready));
     rig.link.feed(&[0x91, 87, 0x00]);
     let events = rig.poll();
-    assert_eq!(telemetry(&events, "ready"), ["true"]);
+    assert_eq!(blockers(&events), [""]);
     assert_eq!(telemetry(&events, "device_state"), ["ready"]);
-    assert_eq!(telemetry(&events, "battery_pct"), ["87"]);
+    assert_eq!(battery(&events), [Some(87)]);
+}
+
+#[test]
+fn looking_for_a_ball_is_no_ball_and_a_shot_is_not_armed() {
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
+    rig.poll();
+    for state in [
+        DeviceState::Detect,
+        DeviceState::Ready,
+        DeviceState::Shot,
+        DeviceState::Done,
+    ] {
+        rig.link.feed(&testing::heartbeat_ack(state));
+    }
+    let events = rig.poll();
+    assert_eq!(blockers(&events), ["no_ball", "", "not_armed", "not_armed"]);
+    assert_eq!(
+        telemetry(&events, "device_state"),
+        ["waiting", "ready", "recording", "processing"]
+    );
 }
 
 #[test]
 fn a_full_battery_and_a_discharging_one_report_their_levels() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     rig.link.feed(&[0x91, 100, 0x03]);
-    assert_eq!(telemetry(&rig.poll(), "battery_pct"), ["100"]);
+    assert_eq!(battery(&rig.poll()), [Some(100)]);
     rig.link.feed(&[0x91, 0x37, 0x01]);
-    assert_eq!(telemetry(&rig.poll(), "battery_pct"), ["55"]);
+    assert_eq!(battery(&rig.poll()), [Some(55)]);
 }
 
 #[test]
-fn an_unknown_charge_state_reports_no_level() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+fn an_unknown_charge_state_clears_the_level() {
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     rig.link.feed(&[0x91, 0x00, 0x05]);
     let events = rig.poll();
-    assert!(telemetry(&events, "battery_pct").is_empty());
+    assert_eq!(battery(&events), [None]);
     assert!(
         logs(&events)
             .iter()
@@ -720,29 +768,28 @@ fn an_unknown_charge_state_reports_no_level() {
 }
 
 #[test]
-fn no_battery_reports_no_level() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+fn no_battery_clears_the_level() {
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     rig.link.feed(&[0x91, 0x00, 0x04]);
-    assert!(telemetry(&rig.poll(), "battery_pct").is_empty());
+    assert_eq!(battery(&rig.poll()), [None]);
 }
 
 #[test]
-fn a_level_goes_off_the_card_once_the_charge_state_is_unknown() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+fn an_unknown_charge_state_after_a_level_clears_the_battery() {
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     rig.link.feed(&[0x91, 100, 0x03]);
-    assert_eq!(telemetry(&rig.poll(), "battery_pct"), ["100"]);
+    assert_eq!(battery(&rig.poll()), [Some(100)]);
     rig.link.feed(&[0x91, 0x00, 0x05]);
-    assert_eq!(telemetry(&rig.poll(), "battery_pct"), [""]);
-    // Said once; the next unknown frame adds nothing.
+    assert_eq!(battery(&rig.poll()), [None]);
     rig.link.feed(&[0x91, 0x00, 0x04]);
-    assert!(telemetry(&rig.poll(), "battery_pct").is_empty());
+    assert_eq!(battery(&rig.poll()), [None]);
 }
 
 #[test]
 fn close_disarms_then_releases() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     let events = rig.close();
     let commands = rig.link.commands();
@@ -750,12 +797,12 @@ fn close_disarms_then_releases() {
     assert_eq!(commands.last(), Some(&0x81));
     assert_eq!(detect[3], 0x00, "detection off");
     assert_eq!(rig.link.wires().released, 1);
-    assert_eq!(telemetry(&events, "ready"), ["false"]);
+    assert_eq!(blockers(&events), ["not_armed"]);
 }
 
 #[test]
 fn a_dropped_session_still_releases_the_link() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     drop(rig.session.take());
     assert_eq!(rig.link.wires().released, 1);
@@ -763,7 +810,7 @@ fn a_dropped_session_still_releases_the_link() {
 
 #[test]
 fn a_lost_link_ends_the_session() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     rig.link.wires().lost = true;
     let mut seen = Vec::new();
@@ -782,7 +829,7 @@ fn a_lost_link_ends_the_session() {
 
 #[test]
 fn close_after_a_lost_link_writes_nothing_and_succeeds() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     let written = rig.link.wires().written.len();
     rig.link.wires().lost = true;
@@ -800,7 +847,7 @@ fn close_after_a_lost_link_writes_nothing_and_succeeds() {
     let events = rig.close();
     assert_eq!(rig.link.wires().written.len(), written, "no disarm");
     assert_eq!(rig.link.wires().released, 1);
-    assert_eq!(telemetry(&events, "ready"), ["false"]);
+    assert_eq!(blockers(&events), ["not_armed"]);
 }
 
 #[test]
@@ -810,7 +857,7 @@ fn config_warnings_are_logged_on_the_first_connect_only() {
         dot_bottom_to_face_center_mm: BTreeMap::from([("QQ".to_owned(), 1.0)]),
         ..Config::default()
     };
-    let mut rig = Rig::new(config, DeviceCommand::default());
+    let mut rig = Rig::new(config, TurnHints::default());
     let warnings: Vec<_> = logs(&rig.connect_events)
         .into_iter()
         .filter(|(l, _)| *l == Level::Warn)
@@ -822,7 +869,7 @@ fn config_warnings_are_logged_on_the_first_connect_only() {
 
     // Reconnecting does not repeat them.
     let stop = Stop::new();
-    let mut host = Host(DeviceCommand::default());
+    let mut host = Host(TurnHints::default());
     let mut seen = Vec::new();
     {
         let mut sink = |e| seen.push(e);
@@ -837,14 +884,14 @@ fn config_warnings_are_logged_on_the_first_connect_only() {
 
 #[test]
 fn shot_numbers_keep_counting_across_sessions() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     let (ball, club) = iron();
     rig.shot(&ball, &club);
     rig.close();
 
     let stop = Stop::new();
-    let mut host = Host(DeviceCommand::default());
+    let mut host = Host(TurnHints::default());
     let link = FakeLink::default();
     let mut session = {
         let mut sink = |_| {};
@@ -869,9 +916,9 @@ fn shot_numbers_keep_counting_across_sessions() {
             .poll(Duration::from_millis(5), &mut out)
             .expect("poll");
     }
-    let FrpEvent::ShotTrigger { key, .. } = frp(&seen)
+    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = frp(&seen)
         .into_iter()
-        .find(|e| matches!(e, FrpEvent::ShotTrigger { .. }))
+        .find(|e| matches!(e, FrpBody::ShotTrigger(_)))
         .expect("trigger")
     else {
         unreachable!()
@@ -885,7 +932,7 @@ fn a_stopped_connect_returns_stopped() {
     let mut driver = Omni::new(Config::default()).expect("valid");
     let stop = Stop::new();
     stop.stop();
-    let mut host = Host(DeviceCommand::default());
+    let mut host = Host(TurnHints::default());
     let mut sink = |_| {};
     let mut ctx = ConnectCtx::new(&stop, Events::new(&mut sink, &flags), &mut host);
     let link = FakeLink::default();
@@ -901,7 +948,7 @@ fn a_failed_attempt_alerts_and_backs_off() {
     let mut backoff = Backoff::default();
     let mut alerts = Vec::new();
     let mut sink = |e| {
-        if let DeviceEvent::Frp(FrpEvent::Alert { message, .. }) = e {
+        if let DeviceEvent::Frp(FrpBody::BusAlert(BusAlert { message, .. })) = e {
             alerts.push(message);
         }
     };
@@ -952,7 +999,7 @@ fn a_config_change_restarts_and_is_kept() {
 
 #[test]
 fn a_config_change_keeps_the_shot_numbers() {
-    let mut rig = Rig::new(Config::default(), DeviceCommand::default());
+    let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     let (ball, club) = iron();
     rig.shot(&ball, &club);
@@ -963,7 +1010,7 @@ fn a_config_change_keeps_the_shot_numbers() {
     });
 
     let stop = Stop::new();
-    let mut host = Host(DeviceCommand::default());
+    let mut host = Host(TurnHints::default());
     let link = FakeLink::default();
     let mut session = {
         let mut sink = |_| {};
@@ -990,9 +1037,9 @@ fn a_config_change_keeps_the_shot_numbers() {
     }
     // The new config is in play: the session armed the pitching wedge.
     assert_eq!(&link.selects()[0][3..5], &[0x0a, 0x02]);
-    let FrpEvent::ShotTrigger { key, .. } = frp(&seen)
+    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = frp(&seen)
         .into_iter()
-        .find(|e| matches!(e, FrpEvent::ShotTrigger { .. }))
+        .find(|e| matches!(e, FrpBody::ShotTrigger(_)))
         .expect("trigger")
     else {
         unreachable!()

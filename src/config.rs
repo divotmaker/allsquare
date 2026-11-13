@@ -114,7 +114,7 @@ pub(crate) struct Settings {
     #[cfg_attr(not(any(feature = "bluez", feature = "btleplug")), allow(dead_code))]
     // read by the BLE connect
     pub address: Option<String>,
-    /// The club armed when the host has none latched.
+    /// The club armed when the turn's hints name none.
     pub club: flightrelay::Club,
     pub spin: SpinMode,
     pub discard_zero_spin: bool,

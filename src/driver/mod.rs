@@ -11,29 +11,33 @@
 //!   connect without pairing and read its identity. The connect can be
 //!   stopped at any point; a connection that completes after a stop is
 //!   disconnected again, since the device takes one central at a time.
-//! - **Arm** once, with the club and hand the host has latched, else the
-//!   config's club and a right-handed player, and the configured spin mode.
-//! - **Shots** become `shot_trigger` (stamped with the time the ball
-//!   notification arrived), `launch`, then `club_path` and `face_impact` when
-//!   the device tracked the club, then `shot_finished`. The device measures
-//!   launch only, so there is no `flight_result`. A total spin of 0 is sent
-//!   as 0, with no spin axis.
+//! - **Arm** once, with the club and hand of the current `golfer.turn`
+//!   hints, else the config's club and a right-handed player, and the
+//!   configured spin mode.
+//! - **Shots** become `shot.trigger` (stamped with the time the ball
+//!   notification arrived), `shot.launch`, then `shot.club` and
+//!   `shot.impact` when the device tracked the club, then `shot.finished`.
+//!   The device measures launch only, so there is no `shot.flight`. A total
+//!   spin of 0 is sent as 0, with no spin axis.
 //! - **Zero-spin misreads** (a shot with no spin at all, unless the putter is
 //!   in play) are dropped when [`Config::discard_non_putting_zero_spin`] is
 //!   on: the driver raises a warning alert, counts the drop in the
 //!   `zero_spin_discards` telemetry key and emits
 //!   [`DeviceEvent::ShotDiscarded`](flightrelay::driver::DeviceEvent::ShotDiscarded).
 //!   The dropped shot takes no shot number.
-//! - **Club and hand** follow the host's commands. A club the device has no
-//!   code for is armed as the nearest club of the same kind
-//!   ([`crate::config::nearest_club`]). The device is told only
-//!   when the club or the hand differs from what it has, with one club select
-//!   carrying both. The detection mode does not apply: putting and chipping
-//!   differ only by the club in play.
-//! - **Telemetry:** `ready`, `device_state` (`waiting`, `ready`,
-//!   `recording`, `processing`), `battery_pct` (not sent while the charge
-//!   state is unknown or there is no battery; sent once as an empty value to
-//!   clear a level reported earlier), `zero_spin_discards`.
+//! - **Club and hand** follow the hints of each `golfer.turn`. A club the
+//!   device has no code for is armed as the nearest club of the same kind
+//!   ([`crate::config::nearest_club`]). A turn without a club or a hand
+//!   leaves the device's current one in place. The device is told only when
+//!   the club or the hand differs from what it has, with one club select
+//!   carrying both. The mode does not apply: putting and chipping differ
+//!   only by the club in play.
+//! - **Status** (the actor's `bus.actor`): `blockers` is empty while the
+//!   device has a ball and is ready, `no_ball` while it looks for one, and
+//!   `not_armed` otherwise; the battery level (not sent while the charge
+//!   state is unknown or there is no battery); the telemetry keys
+//!   `device_state` (`waiting`, `ready`, `recording`, `processing`) and
+//!   `zero_spin_discards`.
 //! - **Close** disarms the device and disconnects it on either backend,
 //!   within 5 s. After a lost link it only lets go of the link.
 //! - **Raw frames:** each notification (`"notify 11 02"`, labeled with its
@@ -46,6 +50,7 @@
 //!
 //! The device id is the device's advertised name, e.g. `SquareGolf(CD01)`.
 //! The card label adds its BLE address, which pins the device in the config.
+//! Neither goes on the bus: the actor id identifies the launch monitor there.
 
 mod convert;
 
@@ -55,10 +60,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flightrelay::config::{ConfigError, DriverConfig};
 use flightrelay::driver::{
-    Backoff, ConnectCtx, DeviceCommand, DeviceDriver, DeviceIdentity, DeviceSession, DriverInfo,
-    Events, Level, NoAction, RawProfile, SessionEnd, ShotIds, Stopped,
+    Backoff, ConnectCtx, DeviceDriver, DeviceIdentity, DeviceSession, DriverInfo, Events, Level,
+    NoAction, RawProfile, SessionEnd, ShotIds, Stopped, TurnHints,
 };
-use flightrelay::{FrpEvent, RawDir, RawFrame, Severity, Source, Velocity};
+use flightrelay::types::blockers;
+use flightrelay::{FrpBody, RawDir, RawFrame, Severity, Source, Velocity};
 
 use crate::client::{Client, Event, Transport};
 use crate::club::{Club, Handed};
@@ -102,8 +108,8 @@ impl From<Stopped> for Error {
 /// [`Transport`], plus what the driver needs to identify the device and to
 /// let it go.
 pub trait BleLink: Transport + Send {
-    /// The device's advertised name, e.g. `SquareGolf(CD01)`: the FRP
-    /// `device` id.
+    /// The device's advertised name, e.g. `SquareGolf(CD01)`: the session's
+    /// device id.
     fn name(&self) -> &str;
 
     /// The device's BLE address (on macOS, the peripheral UUID).
@@ -193,7 +199,7 @@ impl Omni {
     }
 
     /// Connect over `link` instead of scanning: the connect steps after the
-    /// BLE link is up (identity, latched club and hand), so a test runs a
+    /// BLE link is up (identity, the hints' club and hand), so a test runs a
     /// whole session on a fake link.
     ///
     /// # Errors
@@ -219,9 +225,9 @@ impl Omni {
 
     /// The session over a link whose identity has been read.
     fn session(&self, ctx: &mut ConnectCtx<'_>, mut opened: Opened) -> OmniSession {
-        let latched = *ctx.latched();
-        let club = latched.club.unwrap_or(self.settings.club);
-        let hand = handed(latched.handed);
+        let hints = *ctx.hints();
+        let club = hints.club.unwrap_or(self.settings.club);
+        let hand = handed(hints.handedness);
         opened.client.set_handed(hand);
 
         let Identified {
@@ -268,7 +274,6 @@ impl Omni {
             hand,
             armed: false,
             discards: 0,
-            battery_shown: false,
             last_rx: Vec::new(),
             ball_at: None,
             pending: Vec::new(),
@@ -649,15 +654,13 @@ pub struct OmniSession {
     armed: bool,
     /// Zero-spin misreads dropped in this session.
     discards: u32,
-    /// A battery level is on the host's card.
-    battery_shown: bool,
     /// The last notification, to recognize the device's repeat of it as the
     /// client does.
     last_rx: Vec<u8>,
     /// When the pending shot's ball notification arrived (UTC ms).
     ball_at: Option<u64>,
-    /// Log lines from [`command`](DeviceSession::command), which has no
-    /// sink; sent on the next poll.
+    /// Log lines from [`hints`](DeviceSession::hints), which has no sink;
+    /// sent on the next poll.
     pending: Vec<(Level, String)>,
     link: LinkState,
 }
@@ -738,7 +741,7 @@ impl OmniSession {
                     label: Some(label),
                     ..RawFrame::new(wire.dir, 0, wire.data)
                 };
-                out.frp(FrpEvent::raw_frame(frame));
+                out.frp(FrpBody::ShotRaw(frame));
             }
         }
     }
@@ -754,30 +757,28 @@ impl OmniSession {
                     DeviceState::Done => Some("processing"),
                     _ => None,
                 };
-                let ready = (
-                    flightrelay::types::telemetry::READY,
-                    (state == DeviceState::Ready).to_string(),
-                );
-                match label {
-                    Some(label) => out.telemetry([ready, ("device_state", label.to_owned())]),
-                    None => out.telemetry([ready]),
+                match state {
+                    DeviceState::Ready => out.blockers(Vec::<String>::new()),
+                    DeviceState::Detect => out.blockers([blockers::NO_BALL]),
+                    _ => out.blockers([blockers::NOT_ARMED]),
+                }
+                // A state with no label clears the old one, so the actor never
+                // shows a state the device has left.
+                if let Some(label) = label {
+                    out.telemetry([("device_state", label)]);
+                } else {
+                    out.clear_telemetry(["device_state"]);
                 }
             }
             &Event::Battery { percent, state } => {
                 out.log(Level::Debug, format!("battery {percent}% {state:?}"));
                 // With no battery or an unknown charge state the level byte
-                // is not a reading (`91 00 05` while plugged in). An empty
-                // value clears a level reported earlier.
-                let level = match state {
-                    ChargingState::Unknown | ChargingState::NoBattery => None,
-                    _ => Some(percent.to_string()),
-                };
-                if level.is_some() || self.battery_shown {
-                    self.battery_shown = level.is_some();
-                    out.telemetry([(
-                        flightrelay::types::telemetry::BATTERY_PCT,
-                        level.unwrap_or_default(),
-                    )]);
+                // is not a reading (`91 00 05` while plugged in), and the
+                // battery leaves the actor.
+                if matches!(state, ChargingState::Unknown | ChargingState::NoBattery) {
+                    out.battery(None);
+                } else {
+                    out.battery(percent);
                 }
             }
             Event::Shot { ball, club } => self.shot(ball, club.as_ref(), out),
@@ -834,9 +835,9 @@ impl OmniSession {
         out.launch(key.clone(), l);
         match club {
             Some(c) => {
-                out.club_path(key.clone(), club_data(c));
+                out.club(key.clone(), club_data(c));
                 if let Some(impact) = face_impact(c) {
-                    out.face_impact(key.clone(), impact);
+                    out.impact(key.clone(), impact);
                 }
             }
             None => out.log(Level::Debug, "  no club data (sticker not tracked)"),
@@ -893,9 +894,9 @@ impl DeviceSession for OmniSession {
         }
     }
 
-    fn command(&mut self, cmd: &DeviceCommand) -> Result<(), Error> {
+    fn hints(&mut self, hints: &TurnHints) -> Result<(), Error> {
         let mut reselect = false;
-        if let Some(club) = cmd.club
+        if let Some(club) = hints.club
             && club != self.club
         {
             if nearest_club(club).is_some() {
@@ -908,19 +909,17 @@ impl DeviceSession for OmniSession {
                 ));
             }
         }
-        if let Some(hand) = cmd.handed.map(|h| handed(Some(h)))
+        if let Some(hand) = hints.handedness.map(|h| handed(Some(h)))
             && hand != self.hand
         {
             self.hand = hand;
             self.client.set_handed(hand);
             reselect = true;
         }
-        if let Some(mode) = cmd.mode {
+        if let Some(mode) = hints.mode {
             self.pending.push((
                 Level::Debug,
-                format!(
-                    "mode change to {mode} ignored: Square Golf has no mode control, select a club"
-                ),
+                format!("mode {mode} ignored: Square Golf has no mode control, select a club"),
             ));
         }
         // Before the arm, the arm carries the club and the hand.
