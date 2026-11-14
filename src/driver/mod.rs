@@ -64,7 +64,7 @@ use flightrelay::driver::{
     Level, NoAction, RawProfile, SessionEnd, ShotIds, Stopped, TurnHints,
 };
 use flightrelay::types::blockers;
-use flightrelay::{FrpBody, RawDir, RawFrame, Severity, Source, Velocity};
+use flightrelay::{RawDir, RawFrame, Severity, Source, Velocity};
 
 use crate::client::{Client, Event, Transport};
 use crate::club::{Club, Handed};
@@ -276,62 +276,29 @@ impl Omni {
             discards: 0,
             last_rx: Vec::new(),
             ball_at: None,
-            pending: Vec::new(),
             link: LinkState::Up,
         }
     }
 
     /// Scan, connect and read the identity on a thread of its own, so the
-    /// host keeps ticking and a stop is seen within 100 ms. `None` after a
-    /// stop.
+    /// host keeps ticking and a stop is seen within about 50 ms. A link that
+    /// opens after a stop is released again.
     #[cfg(any(feature = "bluez", feature = "btleplug"))]
-    fn open_ble(&self, ctx: &mut ConnectCtx<'_>) -> Result<Option<Opened>, Error> {
-        use std::sync::mpsc::{self, RecvTimeoutError};
-
-        let cancel = Arc::new(AtomicBool::new(false));
-        let (tx, rx) = mpsc::channel::<crate::Result<Option<Opened>>>();
+    fn open_ble(&self, ctx: &mut ConnectCtx<'_>) -> Result<Opened, Error> {
         let address = self.settings.address.clone();
         let settings = self.settings.clone();
-        let flag = Arc::clone(&cancel);
-        std::thread::Builder::new()
-            .name("allsquare-connect".into())
-            .spawn(move || {
-                let result = open_link(address.as_deref(), &settings, &flag);
-                // Connect gave up waiting: let the device go.
-                if let Err(mpsc::SendError(Ok(Some(mut opened)))) = tx.send(result) {
-                    opened.release();
-                }
-            })
-            .map_err(|e| crate::Error::Backend(format!("connect thread: {e}")))?;
-
-        let mut stopped_at: Option<Instant> = None;
-        loop {
-            match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(result) => {
-                    if stopped_at.is_some() {
-                        if let Ok(Some(mut opened)) = result {
-                            opened.release();
-                        }
-                        return Err(Error::Stopped);
+        let opened = ctx
+            .run_blocking(
+                Self::STOP_WAIT,
+                move |stop, _| open_link(address.as_deref(), &settings, stop),
+                |late| {
+                    if let Ok(Some(mut opened)) = late {
+                        opened.release();
                     }
-                    return Ok(result?);
-                }
-                Err(RecvTimeoutError::Timeout) => match stopped_at {
-                    None => {
-                        if ctx.tick().is_err() {
-                            cancel.store(true, Ordering::Release);
-                            stopped_at = Some(Instant::now());
-                        }
-                    }
-                    // The connect thread lets go of what it finds later.
-                    Some(at) if at.elapsed() >= Self::STOP_WAIT => return Err(Error::Stopped),
-                    Some(_) => {}
                 },
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(crate::Error::Backend("connect thread ended".into()).into());
-                }
-            }
-        }
+            )?
+            .map_err(|e| crate::Error::Backend(format!("connect thread: {e}")))??;
+        opened.ok_or(Error::Stopped)
     }
 }
 
@@ -401,9 +368,7 @@ impl FrpDriver for Omni {
             .log(Level::Info, "searching for Square Golf device...");
         #[cfg(any(feature = "bluez", feature = "btleplug"))]
         {
-            let Some(opened) = self.open_ble(ctx)? else {
-                return Err(Error::Stopped);
-            };
+            let opened = self.open_ble(ctx)?;
             Ok(self.session(ctx, opened))
         }
         #[cfg(not(any(feature = "bluez", feature = "btleplug")))]
@@ -543,8 +508,8 @@ struct Wire {
     at: Option<u64>,
 }
 
-/// UTC milliseconds.
-fn utc_ms(at: SystemTime) -> Option<u64> {
+/// `at` in UTC milliseconds.
+fn utc_ms_of(at: SystemTime) -> Option<u64> {
     at.duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|d| u64::try_from(d.as_millis()).ok())
@@ -559,11 +524,11 @@ impl WireLog {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn push(&self, dir: RawDir, data: &[u8], at: SystemTime) {
+    fn push(&self, dir: RawDir, data: &[u8], at: Option<u64>) {
         self.lock().push(Wire {
             dir,
             data: data.to_vec(),
-            at: utc_ms(at),
+            at,
         });
     }
 
@@ -583,7 +548,10 @@ impl Transport for Tap {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let n = self.inner.read(buf)?;
         if n > 0 {
-            let at = self.inner.received_at().unwrap_or_else(SystemTime::now);
+            let at = self
+                .inner
+                .received_at()
+                .map_or_else(flightrelay::utc_ms, utc_ms_of);
             self.log.push(RawDir::Rx, &buf[..n], at);
         }
         Ok(n)
@@ -592,7 +560,7 @@ impl Transport for Tap {
     fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
         // Handed to the stack now; the write returns after the device's
         // response.
-        let at = SystemTime::now();
+        let at = flightrelay::utc_ms();
         self.inner.write(data)?;
         self.log.push(RawDir::Tx, data, at);
         Ok(())
@@ -661,9 +629,6 @@ pub struct OmniSession {
     last_rx: Vec<u8>,
     /// When the pending shot's ball notification arrived (UTC ms).
     ball_at: Option<u64>,
-    /// Log lines from [`hints`](FrpSession::hints), which has no sink;
-    /// sent on the next step.
-    pending: Vec<(Level, String)>,
     link: LinkState,
 }
 
@@ -735,16 +700,7 @@ impl OmniSession {
                 self.last_rx.clone_from(&wire.data);
             }
             let (label, private) = classify(&wire);
-            if private {
-                out.audit(wire.dir, &label, &wire.data);
-            } else if out.wants_raw() {
-                let frame = RawFrame {
-                    timestamp: wire.at,
-                    label: Some(label),
-                    ..RawFrame::new(wire.dir, 0, wire.data)
-                };
-                out.frp(FrpBody::ShotRaw(frame));
-            }
+            out.wire(wire.dir, label, wire.data, wire.at, private);
         }
     }
 
@@ -849,17 +805,15 @@ impl OmniSession {
 }
 
 impl FrpSession for OmniSession {
-    type Driver = Omni;
+    type Error = Error;
+    type Action = NoAction;
 
-    /// Send the pending log lines, arm once, then read until an event (or
-    /// a protocol error), which is [`Activity::Active`], or until three reads in a
-    /// row yield none, which is [`Activity::Idle`]. A read that yields no event
-    /// (a repeat, a club metrics request) is not idleness on its own. The
-    /// client's heartbeat and link watchdog run on `now`.
+    /// Arm once, then read until an event (or a protocol error), which is
+    /// [`Activity::Active`], or until three reads in a row yield none, which
+    /// is [`Activity::Idle`]. A read that yields no event (a repeat, a club
+    /// metrics request) is not idleness on its own. The client's heartbeat
+    /// and link watchdog run on `now`.
     fn step(&mut self, now: Instant, out: &mut Events<'_>) -> Result<Activity, Error> {
-        for (level, line) in self.pending.drain(..) {
-            out.log(level, line);
-        }
         if !self.armed {
             self.arm(out)?;
         }
@@ -892,7 +846,7 @@ impl FrpSession for OmniSession {
         }
     }
 
-    fn hints(&mut self, hints: &TurnHints) -> Result<(), Error> {
+    fn hints(&mut self, hints: &TurnHints, out: &mut Events<'_>) -> Result<(), Error> {
         let mut reselect = false;
         if let Some(club) = hints.club
             && club != self.club
@@ -901,10 +855,10 @@ impl FrpSession for OmniSession {
                 self.club = club;
                 reselect = true;
             } else {
-                self.pending.push((
+                out.log(
                     Level::Warn,
                     format!("no Square Golf club for {club}, keeping {}", self.club),
-                ));
+                );
             }
         }
         if let Some(hand) = hints.handedness.map(|h| handed(Some(h)))
@@ -915,19 +869,19 @@ impl FrpSession for OmniSession {
             reselect = true;
         }
         if let Some(mode) = hints.mode {
-            self.pending.push((
+            out.log(
                 Level::Debug,
                 format!("mode {mode} ignored: Square Golf has no mode control, select a club"),
-            ));
+            );
         }
         // Before the arm, the arm carries the club and the hand.
         if reselect && self.armed {
             let club = square_club(self.club);
-            self.pending
-                .push((Level::Info, format!("club -> {club}, hand {:?}", self.hand)));
-            if let Err(e) = self.client.select_club(club) {
-                self.pending
-                    .push((Level::Warn, format!("club select failed: {e}")));
+            out.log(Level::Info, format!("club -> {club}, hand {:?}", self.hand));
+            let selected = self.client.select_club(club);
+            self.drain(out);
+            if let Err(e) = selected {
+                out.log(Level::Warn, format!("club select failed: {e}"));
             }
         }
         Ok(())

@@ -5,10 +5,12 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use flightrelay::driver::{DeviceEvent, HostFlags, StatusChange};
-use flightrelay::testing::TestHost;
-use flightrelay::{BusAlert, ShotTrigger};
-use flightrelay::{ClubData, Distance, Handedness, Launch};
+use flightrelay::driver::{DeviceEvent, HostFlags};
+use flightrelay::testing::{
+    TestHost, alerts, bodies, clubs, kinds, launches, logs, raw_frames, status, statuses,
+};
+use flightrelay::{BusAlert, FrpBody, ShotTrigger};
+use flightrelay::{ClubData, Distance, Handedness};
 
 use super::*;
 use crate::protocol::{ClubMetrics, uuid};
@@ -145,10 +147,6 @@ impl Rig {
         }
     }
 
-    fn session(&mut self) -> &mut OmniSession {
-        self.session.as_mut().expect("open")
-    }
-
     /// Step the session through `d` of virtual time.
     fn run_for(&mut self, d: Duration) -> Result<Vec<DeviceEvent>, Error> {
         let session = self.session.as_mut().expect("open");
@@ -159,6 +157,15 @@ impl Rig {
     /// Step the session through 20 ms, which reads everything fed so far.
     fn poll(&mut self) -> Vec<DeviceEvent> {
         self.run_for(Duration::from_millis(20)).expect("step")
+    }
+
+    /// Hand the session a turn's hints; what that emitted.
+    fn hints(&mut self, hints: TurnHints) -> Vec<DeviceEvent> {
+        let session = self.session.as_mut().expect("open");
+        self.host
+            .with(|_, out| session.hints(&hints, out))
+            .expect("hints");
+        self.host.take()
     }
 
     fn close(&mut self) -> Vec<DeviceEvent> {
@@ -189,91 +196,27 @@ impl Rig {
     }
 }
 
-fn frp(events: &[DeviceEvent]) -> Vec<&FrpBody> {
-    events
-        .iter()
-        .filter_map(|e| match e {
-            DeviceEvent::Frp(f) => Some(f),
-            _ => None,
-        })
-        .collect()
-}
-
-fn kinds(events: &[DeviceEvent]) -> Vec<&'static str> {
-    frp(events)
+/// The shot messages, in order, without raw frames.
+fn shot_kinds(events: &[DeviceEvent]) -> Vec<&str> {
+    kinds(events)
         .into_iter()
-        .filter_map(|e| match e {
-            FrpBody::ShotTrigger(_) => Some("trigger"),
-            FrpBody::ShotLaunch(_) => Some("launch"),
-            FrpBody::ShotFlight(_) => Some("flight"),
-            FrpBody::ShotClub(_) => Some("club"),
-            FrpBody::ShotImpact(_) => Some("impact"),
-            FrpBody::ShotFinished(_) => Some("finished"),
-            _ => None,
-        })
+        .filter(|k| k.starts_with("shot.") && *k != "shot.raw")
         .collect()
 }
 
-fn launch_of(events: &[DeviceEvent]) -> Launch {
-    frp(events)
+/// The held value of one telemetry key after each status event.
+fn telemetry(events: &[DeviceEvent], key: &str) -> Vec<Option<String>> {
+    statuses(events)
         .into_iter()
-        .find_map(|e| match e {
-            FrpBody::ShotLaunch(m) => Some(m.launch.clone()),
-            _ => None,
-        })
-        .expect("a launch")
-}
-
-fn changes(events: &[DeviceEvent]) -> Vec<&StatusChange> {
-    events
-        .iter()
-        .filter_map(|e| match e {
-            DeviceEvent::StatusChange(c) => Some(c),
-            _ => None,
-        })
+        .map(|s| s.telemetry.get(key).cloned())
         .collect()
 }
 
-/// Every value of one telemetry key, in order.
-fn telemetry(events: &[DeviceEvent], key: &str) -> Vec<String> {
-    changes(events)
-        .into_iter()
-        .filter_map(|c| match c {
-            StatusChange::Telemetry(t) => t.get(key).cloned().flatten(),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Every blockers list, in order, comma-separated.
-fn blockers(events: &[DeviceEvent]) -> Vec<String> {
-    changes(events)
-        .into_iter()
-        .filter_map(|c| match c {
-            StatusChange::Blockers(b) => Some(b.join(",")),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Every battery change, in order: a level, or `None` for no reading.
+/// The held battery level after each status event.
 fn battery(events: &[DeviceEvent]) -> Vec<Option<u8>> {
-    changes(events)
+    statuses(events)
         .into_iter()
-        .filter_map(|c| match c {
-            StatusChange::Battery(b) => Some(*b),
-            _ => None,
-        })
-        .collect()
-}
-
-fn logs(events: &[DeviceEvent]) -> Vec<(Level, &str)> {
-    events
-        .iter()
-        .filter_map(|e| match e {
-            DeviceEvent::Log(level, line) => Some((*level, line.as_str())),
-            _ => None,
-        })
+        .map(|s| s.battery_pct)
         .collect()
 }
 
@@ -327,7 +270,7 @@ fn connect_reports_identity_without_publishing_the_address() {
         "Square Golf SGO300A SquareGolf(CD01) (02:00:00:AB:CD:01)"
     );
     // The identity exchange (query, heartbeat) reaches only the trace log.
-    assert!(frp(&rig.connect_events).is_empty());
+    assert!(bodies(&rig.connect_events).is_empty());
     assert!(
         logs(&rig.connect_events)
             .iter()
@@ -342,7 +285,8 @@ fn connect_reports_identity_without_publishing_the_address() {
 fn the_first_poll_arms_with_the_config_club() {
     let mut rig = Rig::new(Config::default(), TurnHints::default());
     let events = rig.poll();
-    assert_eq!(blockers(&events), ["not_armed"]);
+    assert_eq!(statuses(&events).len(), 1);
+    assert_eq!(status(&events).blockers, [blockers::NOT_ARMED]);
     let selects = rig.link.selects();
     assert_eq!(selects.len(), 1);
     // 7-iron (07, irons 02), right-handed (00).
@@ -381,28 +325,27 @@ fn a_shot_is_sent_once_complete_with_a_timestamp() {
     let (ball, club) = iron();
     let events = rig.shot(&ball, &club);
     assert_eq!(
-        kinds(&events),
-        ["trigger", "launch", "club", "impact", "finished"]
+        shot_kinds(&events),
+        [
+            "shot.trigger",
+            "shot.launch",
+            "shot.club",
+            "shot.impact",
+            "shot.finished"
+        ]
     );
-    let FrpBody::ShotTrigger(ShotTrigger { key, timestamp }) = frp(&events)[0] else {
+    let FrpBody::ShotTrigger(ShotTrigger { key, timestamp }) = bodies(&events)[0] else {
         panic!("{events:?}");
     };
     assert_eq!(key.shot_number, 1);
     assert!(timestamp.is_some_and(|t| t > 1_600_000_000_000));
-    let l = launch_of(&events);
+    let l = launches(&events)[0];
     assert_eq!(l.launch_speed, Some(Velocity::MetersPerSecond(50.0)));
     assert_eq!(l.total_spin_rpm, Some(6000));
     assert_eq!(l.sidespin_rpm, Some(310));
     assert_eq!(l.spin_axis, Some(3.0));
-    let club_data = frp(&events)
-        .into_iter()
-        .find_map(|e| match e {
-            FrpBody::ShotClub(m) => Some(m.club.clone()),
-            _ => None,
-        })
-        .expect("club");
     assert_eq!(
-        club_data,
+        *clubs(&events)[0],
         ClubData {
             club_speed: Some(Velocity::MetersPerSecond(37.0)),
             path: Some(1.0),
@@ -413,7 +356,7 @@ fn a_shot_is_sent_once_complete_with_a_timestamp() {
             ..ClubData::default()
         }
     );
-    let impact = frp(&events)
+    let impact = bodies(&events)
         .into_iter()
         .find_map(|e| match e {
             FrpBody::ShotImpact(m) => Some(m.impact.clone()),
@@ -428,7 +371,7 @@ fn a_shot_is_sent_once_complete_with_a_timestamp() {
 
     // The next shot takes the next number.
     let events = rig.shot(&ball, &club);
-    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = frp(&events)[0] else {
+    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = bodies(&events)[0] else {
         panic!("{events:?}");
     };
     assert_eq!(key.shot_number, 2);
@@ -454,7 +397,7 @@ fn the_trigger_and_frames_carry_the_arrival_time() {
     let mut events = rig.poll();
     rig.link.feed(&testing::club_notification(&club));
     events.extend(rig.poll());
-    let FrpBody::ShotTrigger(ShotTrigger { key, timestamp }) = frp(&events)
+    let FrpBody::ShotTrigger(ShotTrigger { key, timestamp }) = bodies(&events)
         .into_iter()
         .find(|e| matches!(e, FrpBody::ShotTrigger(_)))
         .expect("trigger")
@@ -463,12 +406,10 @@ fn the_trigger_and_frames_carry_the_arrival_time() {
     };
     assert_eq!(key.shot_number, 1);
     assert_eq!(*timestamp, Some(1_700_000_010_000));
-    let ball_frames: Vec<Option<u64>> = frp(&events)
+    let ball_frames: Vec<Option<u64>> = raw_frames(&events)
         .into_iter()
-        .filter_map(|e| match e {
-            FrpBody::ShotRaw(f) if f.label.as_deref() == Some("notify 11 02") => Some(f.timestamp),
-            _ => None,
-        })
+        .filter(|f| f.label.as_deref() == Some("notify 11 02"))
+        .map(|f| f.timestamp)
         .collect();
     assert_eq!(ball_frames, [Some(1_700_000_010_000); 2]);
 }
@@ -480,8 +421,11 @@ fn a_zero_spin_putt_sends_total_zero_and_no_axis() {
     rig.poll();
     let (ball, club) = putt();
     let events = rig.shot(&ball, &club);
-    assert_eq!(kinds(&events), ["trigger", "launch", "finished"]);
-    let l = launch_of(&events);
+    assert_eq!(
+        shot_kinds(&events),
+        ["shot.trigger", "shot.launch", "shot.finished"]
+    );
+    let l = launches(&events)[0];
     assert_eq!(l.total_spin_rpm, Some(0));
     assert_eq!(l.spin_axis, None);
     assert_eq!(l.backspin_rpm, Some(0));
@@ -495,35 +439,35 @@ fn a_zero_spin_misread_is_discarded() {
     let (ball, _) = putt();
     let (_, club) = iron();
     let events = rig.shot(&ball, &club);
-    assert!(kinds(&events).is_empty(), "{events:?}");
+    assert!(shot_kinds(&events).is_empty(), "{events:?}");
     assert!(
         events
             .iter()
             .any(|e| matches!(e, DeviceEvent::ShotDiscarded))
     );
-    assert_eq!(telemetry(&events, "zero_spin_discards"), ["1"]);
-    let alert = frp(&events)
-        .into_iter()
-        .find_map(|e| match e {
-            FrpBody::BusAlert(BusAlert {
-                severity, message, ..
-            }) => Some((*severity, message.clone())),
-            _ => None,
-        })
-        .expect("alert");
-    assert_eq!(alert.0, Severity::Warn);
+    assert_eq!(
+        telemetry(&events, "zero_spin_discards"),
+        [Some("1".to_owned())]
+    );
+    let alert = alerts(&events)[0];
+    assert_eq!(alert.severity, Severity::Warn);
     assert!(
-        alert.1.starts_with("Square Golf: discarded a 4 mph shot"),
+        alert
+            .message
+            .starts_with("Square Golf: discarded a 4 mph shot"),
         "{}",
-        alert.1
+        alert.message
     );
 
     // The discarded shot took no number; the count keeps going.
     let events = rig.shot(&ball, &club);
-    assert_eq!(telemetry(&events, "zero_spin_discards"), ["2"]);
+    assert_eq!(
+        telemetry(&events, "zero_spin_discards"),
+        [Some("2".to_owned())]
+    );
     let (ball, club) = iron();
     let events = rig.shot(&ball, &club);
-    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = frp(&events)[0] else {
+    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = bodies(&events)[0] else {
         panic!("{events:?}");
     };
     assert_eq!(key.shot_number, 1);
@@ -539,7 +483,10 @@ fn the_discard_can_be_turned_off() {
     rig.poll();
     let (ball, club) = putt();
     let events = rig.shot(&ball, &club);
-    assert_eq!(kinds(&events), ["trigger", "launch", "finished"]);
+    assert_eq!(
+        shot_kinds(&events),
+        ["shot.trigger", "shot.launch", "shot.finished"]
+    );
 }
 
 #[test]
@@ -550,25 +497,18 @@ fn one_club_change_after_the_arm_is_one_select() {
     // Hints that name the club, the same club with a mode, then only the
     // hand (which the device already has) are one change.
     let pw = TurnHints::default().with_club(flightrelay::Club::PitchingWedge);
-    rig.session().hints(&pw).expect("hints");
-    rig.session()
-        .hints(&pw.with_mode(flightrelay::Mode::Full))
-        .expect("hints");
-    rig.session()
-        .hints(&TurnHints::default().with_handedness(Handedness::Right))
-        .expect("hints");
+    rig.hints(pw);
+    rig.hints(pw.with_mode(flightrelay::Mode::Full));
+    rig.hints(TurnHints::default().with_handedness(Handedness::Right));
     let selects = rig.link.selects();
     assert_eq!(selects.len(), 2, "{selects:02x?}");
     assert_eq!(&selects[1][3..6], &[0x0a, 0x02, 0x00]);
 
     // A hand change reselects the same club with the new hand.
-    rig.session()
-        .hints(&TurnHints::default().with_handedness(Handedness::Left))
-        .expect("hints");
+    let events = rig.hints(TurnHints::default().with_handedness(Handedness::Left));
     let selects = rig.link.selects();
     assert_eq!(selects.len(), 3);
     assert_eq!(&selects[2][3..6], &[0x0a, 0x02, 0x01]);
-    let events = rig.poll();
     assert!(
         logs(&events)
             .iter()
@@ -580,12 +520,8 @@ fn one_club_change_after_the_arm_is_one_select() {
 fn a_club_without_a_code_selects_the_nearest() {
     let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
-    rig.session()
-        .hints(&TurnHints::default().with_club(flightrelay::Club::MiniDriver))
-        .expect("hints");
-    rig.session()
-        .hints(&TurnHints::default().with_club(flightrelay::Club::Iron2))
-        .expect("hints");
+    rig.hints(TurnHints::default().with_club(flightrelay::Club::MiniDriver));
+    rig.hints(TurnHints::default().with_club(flightrelay::Club::Iron2));
     let selects = rig.link.selects();
     assert_eq!(&selects[1][3..5], &[0x01, 0x00], "MD -> driver");
     assert_eq!(&selects[2][3..5], &[0x03, 0x02], "2I -> 3I");
@@ -594,9 +530,7 @@ fn a_club_without_a_code_selects_the_nearest() {
 #[test]
 fn hints_before_the_arm_are_only_recorded() {
     let mut rig = Rig::new(Config::default(), TurnHints::default());
-    rig.session()
-        .hints(&TurnHints::default().with_club(flightrelay::Club::SandWedge))
-        .expect("hints");
+    rig.hints(TurnHints::default().with_club(flightrelay::Club::SandWedge));
     assert!(rig.link.selects().is_empty());
     rig.poll();
     let selects = rig.link.selects();
@@ -608,13 +542,11 @@ fn hints_before_the_arm_are_only_recorded() {
 fn the_putter_exemption_follows_the_club_in_play() {
     let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
-    rig.session()
-        .hints(&TurnHints::default().with_club(flightrelay::Club::Putter))
-        .expect("hints");
+    rig.hints(TurnHints::default().with_club(flightrelay::Club::Putter));
     let (ball, club) = putt();
     assert_eq!(
-        kinds(&rig.shot(&ball, &club)),
-        ["trigger", "launch", "finished"]
+        shot_kinds(&rig.shot(&ball, &club)),
+        ["shot.trigger", "shot.launch", "shot.finished"]
     );
 }
 
@@ -624,20 +556,14 @@ fn raw_frames_only_when_wanted_and_never_private_ones() {
     rig.poll();
     let (ball, club) = iron();
     let quiet = rig.shot(&ball, &club);
-    assert!(!frp(&quiet).iter().any(|e| matches!(e, FrpBody::ShotRaw(_))));
+    assert!(raw_frames(&quiet).is_empty());
 
     rig.host.flags.set_wants_raw(true);
     rig.link.feed(&testing::heartbeat_ack(DeviceState::Ready));
     rig.link.feed(&testing::QUERY_RESPONSE);
     let mut events = rig.poll();
     events.extend(rig.shot(&ball, &club));
-    let frames: Vec<&RawFrame> = frp(&events)
-        .into_iter()
-        .filter_map(|e| match e {
-            FrpBody::ShotRaw(f) => Some(f),
-            _ => None,
-        })
-        .collect();
+    let frames = raw_frames(&events);
     let labels: Vec<&str> = frames
         .iter()
         .map(|f| f.label.as_deref().unwrap_or(""))
@@ -684,30 +610,27 @@ fn state_and_battery_become_status() {
     rig.poll();
     rig.link.feed(&testing::heartbeat_ack(DeviceState::Ready));
     rig.link.feed(&[0x91, 87, 0x00]);
-    let events = rig.poll();
-    assert_eq!(blockers(&events), [""]);
-    assert_eq!(telemetry(&events, "device_state"), ["ready"]);
-    assert_eq!(battery(&events), [Some(87)]);
+    let held = status(&rig.poll());
+    assert!(held.blockers.is_empty());
+    assert_eq!(held.telemetry["device_state"], "ready");
+    assert_eq!(held.battery_pct, Some(87));
 }
 
 #[test]
 fn looking_for_a_ball_is_no_ball_and_a_shot_is_not_armed() {
     let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
-    for state in [
-        DeviceState::Detect,
-        DeviceState::Ready,
-        DeviceState::Shot,
-        DeviceState::Done,
+    for (state, blocker, label) in [
+        (DeviceState::Detect, Some(blockers::NO_BALL), "waiting"),
+        (DeviceState::Ready, None, "ready"),
+        (DeviceState::Shot, Some(blockers::NOT_ARMED), "recording"),
+        (DeviceState::Done, Some(blockers::NOT_ARMED), "processing"),
     ] {
         rig.link.feed(&testing::heartbeat_ack(state));
+        let held = status(&rig.poll());
+        assert_eq!(held.blockers, Vec::from_iter(blocker), "{state:?}");
+        assert_eq!(held.telemetry["device_state"], label);
     }
-    let events = rig.poll();
-    assert_eq!(blockers(&events), ["no_ball", "", "not_armed", "not_armed"]);
-    assert_eq!(
-        telemetry(&events, "device_state"),
-        ["waiting", "ready", "recording", "processing"]
-    );
 }
 
 #[test]
@@ -766,7 +689,7 @@ fn close_disarms_then_releases() {
     assert_eq!(commands.last(), Some(&0x81));
     assert_eq!(detect[3], 0x00, "detection off");
     assert_eq!(rig.link.wires().released, 1);
-    assert_eq!(blockers(&events), ["not_armed"]);
+    assert_eq!(status(&events).blockers, [blockers::NOT_ARMED]);
 }
 
 #[test]
@@ -823,7 +746,7 @@ fn close_after_a_lost_link_writes_nothing_and_succeeds() {
     let events = rig.close();
     assert_eq!(rig.link.wires().written.len(), written, "no disarm");
     assert_eq!(rig.link.wires().released, 1);
-    assert_eq!(blockers(&events), ["not_armed"]);
+    assert_eq!(status(&events).blockers, [blockers::NOT_ARMED]);
 }
 
 #[test]
@@ -861,7 +784,7 @@ fn shot_numbers_keep_counting_across_sessions() {
     rig.link = link;
     rig.poll();
     let seen = rig.shot(&ball, &club);
-    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = frp(&seen)
+    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = bodies(&seen)
         .into_iter()
         .find(|e| matches!(e, FrpBody::ShotTrigger(_)))
         .expect("trigger")
@@ -957,7 +880,7 @@ fn a_config_change_keeps_the_shot_numbers() {
     let seen = rig.shot(&ball, &club);
     // The new config is in play: the session armed the pitching wedge.
     assert_eq!(&rig.link.selects()[0][3..5], &[0x0a, 0x02]);
-    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = frp(&seen)
+    let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = bodies(&seen)
         .into_iter()
         .find(|e| matches!(e, FrpBody::ShotTrigger(_)))
         .expect("trigger")
