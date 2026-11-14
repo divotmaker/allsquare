@@ -304,8 +304,9 @@ impl From<u8> for ChargingState {
 }
 
 /// Ball launch data. Identical on the Home and the Omni.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct BallMetrics {
     /// Raw shot-type byte. Always `0x37` on the Omni, including for putts —
     /// it does **not** distinguish putt from full swing on this device.
@@ -339,6 +340,7 @@ pub struct BallMetrics {
 /// bitmask *and* the per-field `0xffff` sentinel are checked.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct ClubMetrics {
     /// Raw validity bitmask; bit *n* corresponds to field *n*.
     pub mask: u8,

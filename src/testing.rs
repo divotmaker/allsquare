@@ -21,10 +21,8 @@
 //!     Notification::HeartbeatAck(DeviceState::Ready)
 //! );
 //!
-//! let ball = testing::BallMetrics {
-//!     speed: 40.0,
-//!     ..testing::ball_metrics()
-//! };
+//! let mut ball = testing::ball_metrics();
+//! ball.speed = 40.0;
 //! let frame = testing::ball_notification(&ball);
 //! assert_eq!(protocol::parse(&frame).unwrap(), Notification::Ball(ball));
 //! ```
@@ -56,8 +54,7 @@ pub const QUERY_RESPONSE: [u8; 5] = [0x11, 0x06, 0x17, 0x01, 0x00];
 pub const CLUB_NOTIFICATION_NO_DATA: [u8; 3] = [0x11, 0x07, 0x00];
 
 /// Ball metrics for a shot that measured nothing: every value zero, with the
-/// [`TYPICAL_SHOT_TYPE`]. Override the fields a test cares about with struct
-/// update syntax.
+/// [`TYPICAL_SHOT_TYPE`]. Assign the fields a test cares about.
 #[must_use]
 pub fn ball_metrics() -> BallMetrics {
     BallMetrics {

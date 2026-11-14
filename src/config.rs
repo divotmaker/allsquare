@@ -42,6 +42,7 @@ pub const DEFAULT_CLUB: &str = "7I";
 /// Settings of the Square Golf driver.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct Config {
     /// The device to connect to: its BLE address (on macOS, the peripheral
     /// UUID) or its advertised name, e.g. `SquareGolf(CD01)`, ignoring case.

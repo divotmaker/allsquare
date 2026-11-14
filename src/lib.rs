@@ -136,6 +136,8 @@ pub mod testing;
 
 pub use client::{Client, Event, Firmware, Transport};
 pub use club::{Category, Club, Handed};
+#[cfg(feature = "config")]
+pub use config::Config;
 pub use error::{Error, Result};
 pub use impact::ImpactCalibration;
 pub use protocol::{
