@@ -5,12 +5,12 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use flightrelay::driver::{DeviceEvent, HostFlags};
+use flightrelay::driver::DeviceEvent;
 use flightrelay::testing::{
     TestHost, alerts, bodies, clubs, kinds, launches, logs, raw_frames, status, statuses,
 };
-use flightrelay::{BusAlert, FrpBody, ShotTrigger};
 use flightrelay::{ClubData, Distance, Handedness};
+use flightrelay::{FrpBody, ShotTrigger};
 
 use super::*;
 use crate::protocol::{ClubMetrics, uuid};
@@ -689,7 +689,7 @@ fn close_disarms_then_releases() {
     assert_eq!(commands.last(), Some(&0x81));
     assert_eq!(detect[3], 0x00, "detection off");
     assert_eq!(rig.link.wires().released, 1);
-    assert_eq!(status(&events).blockers, [blockers::NOT_ARMED]);
+    assert!(statuses(&events).is_empty(), "the host clears the status");
 }
 
 #[test]
@@ -746,7 +746,7 @@ fn close_after_a_lost_link_writes_nothing_and_succeeds() {
     let events = rig.close();
     assert_eq!(rig.link.wires().written.len(), written, "no disarm");
     assert_eq!(rig.link.wires().released, 1);
-    assert_eq!(status(&events).blockers, [blockers::NOT_ARMED]);
+    assert!(statuses(&events).is_empty(), "the host clears the status");
 }
 
 #[test]
@@ -803,37 +803,6 @@ fn a_stopped_connect_returns_stopped() {
     let result = host.connect_with(|ctx| driver.connect_with(ctx, link.clone()));
     assert!(matches!(result, Err(Error::Stopped)), "{result:?}");
     assert!(link.wires().written.is_empty());
-}
-
-#[test]
-fn a_failed_attempt_alerts_and_backs_off() {
-    let flags = HostFlags::new();
-    let mut driver = Omni::new(Config::default()).expect("valid");
-    let mut backoff = Backoff::default();
-    let mut alerts = Vec::new();
-    let mut sink = |e| {
-        if let DeviceEvent::Frp(FrpBody::BusAlert(BusAlert { message, .. })) = e {
-            alerts.push(message);
-        }
-    };
-    let error = Error::Device(crate::Error::NotFound);
-    let ended = SessionEnd {
-        error: Some(&error),
-        connected_for: None,
-        attempts: 1,
-    };
-    {
-        let mut out = Events::new(&mut sink, &flags);
-        assert_eq!(
-            driver.retry_delay(&ended, &mut backoff, &mut out),
-            Some(Duration::from_secs(1))
-        );
-        assert_eq!(
-            driver.retry_delay(&ended, &mut backoff, &mut out),
-            Some(Duration::from_secs(2))
-        );
-    }
-    assert_eq!(alerts[0], "Square Golf error: no Square Golf device found");
 }
 
 #[test]

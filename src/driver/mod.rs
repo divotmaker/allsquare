@@ -60,8 +60,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use flightrelay::config::{ConfigError, DriverConfig};
 use flightrelay::driver::{
-    Activity, Backoff, ConnectCtx, DeviceIdentity, DriverInfo, Events, FrpDriver, FrpSession,
-    Level, NoAction, RawProfile, SessionEnd, ShotIds, Stopped, TurnHints,
+    Activity, ConnectCtx, DeviceIdentity, DriverInfo, Events, FrpDriver, FrpSession, Level,
+    NoAction, RawProfile, ShotIds, Stopped, TurnHints,
 };
 use flightrelay::types::blockers;
 use flightrelay::{RawDir, RawFrame, Severity, Source, Velocity};
@@ -378,18 +378,6 @@ impl FrpDriver for Omni {
             )
             .into())
         }
-    }
-
-    fn retry_delay(
-        &mut self,
-        ended: &SessionEnd<'_, Error>,
-        backoff: &mut Backoff,
-        out: &mut Events<'_>,
-    ) -> Option<Duration> {
-        if let Some(error) = ended.error {
-            out.alert(Severity::Warn, format!("Square Golf error: {error}"));
-        }
-        Some(backoff.delay(ended.connected_for))
     }
 
     fn apply_config(&mut self, new: &Config) {
@@ -903,7 +891,6 @@ impl FrpSession for OmniSession {
         self.drain(out);
         self.link = LinkState::Released;
         let released = self.client.transport_mut().inner.release();
-        out.ready(false);
         if lost {
             if let Err(e) = released {
                 out.log(
