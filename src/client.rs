@@ -56,6 +56,7 @@ pub trait Transport {
 /// Firmware versions reported by the device.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub struct Firmware {
     /// Launcher firmware version.
     pub launcher: String,

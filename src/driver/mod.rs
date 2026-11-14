@@ -52,6 +52,13 @@
 //! The card label adds its BLE address, which pins the device in the config.
 //! Neither goes on the bus: the actor id identifies the launch monitor there.
 
+// Without a BLE backend or `testing` nothing opens a link, so the session
+// half of this module is never used.
+#![cfg_attr(
+    not(any(test, feature = "testing", feature = "bluez", feature = "btleplug")),
+    allow(dead_code)
+)]
+
 mod convert;
 
 use std::sync::atomic::{AtomicBool, Ordering};

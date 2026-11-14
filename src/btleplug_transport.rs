@@ -418,11 +418,13 @@ impl BtleplugTransport {
     /// [`Transport::write`]) early once `cancel` is set: the call fails with
     /// [`io::ErrorKind::Interrupted`] within 100 ms instead of waiting for its
     /// timeout. `None` (the default) waits for the timeout.
-    pub fn set_cancel(&mut self, cancel: Option<Arc<AtomicBool>>) {
+    #[cfg_attr(not(feature = "driver"), allow(dead_code))] // read by the driver
+    pub(crate) fn set_cancel(&mut self, cancel: Option<Arc<AtomicBool>>) {
         self.cancel = cancel;
     }
 
     /// When the notification the last [`Transport::read`] returned arrived.
+    #[cfg_attr(not(feature = "driver"), allow(dead_code))] // read by the driver
     pub(crate) fn received_at(&self) -> Option<SystemTime> {
         self.received
     }

@@ -108,7 +108,14 @@ impl DriverConfig for Config {
 
 /// What the driver runs with, read from a [`Config`].
 #[derive(Debug, Clone)]
-#[cfg_attr(not(feature = "driver"), allow(dead_code))] // read by the driver
+// Read by a driver session, which needs a BLE backend or `testing`.
+#[cfg_attr(
+    not(all(
+        feature = "driver",
+        any(test, feature = "testing", feature = "bluez", feature = "btleplug")
+    )),
+    allow(dead_code)
+)]
 pub(crate) struct Settings {
     /// The pin, if one is set.
     #[cfg_attr(not(any(feature = "bluez", feature = "btleplug")), allow(dead_code))]

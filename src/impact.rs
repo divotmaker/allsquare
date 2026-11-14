@@ -47,20 +47,6 @@ impl ImpactCalibration {
             None => self.dot_bottom_to_face_center_mm.remove(&club),
         };
     }
-
-    /// Distance from the bottom of the dot down to face center for `club`, in mm.
-    #[deprecated(note = "use `dot_bottom_to_face_center_mm`")]
-    #[must_use]
-    pub fn dot_bottom_to_face_centre_mm(&self, club: Club) -> Option<f64> {
-        self.dot_bottom_to_face_center_mm(club)
-    }
-
-    /// Set (or, with `None`, clear) the distance from the bottom of the dot
-    /// down to face center for `club`, in mm.
-    #[deprecated(note = "use `set_dot_bottom_to_face_center_mm`")]
-    pub fn set_dot_bottom_to_face_centre_mm(&mut self, club: Club, mm: Option<f64>) {
-        self.set_dot_bottom_to_face_center_mm(club, mm);
-    }
 }
 
 impl Default for ImpactCalibration {
@@ -120,14 +106,5 @@ mod tests {
             ImpactCalibration::empty().dot_bottom_to_face_center_mm(Club::Driver),
             None
         );
-    }
-
-    #[test]
-    #[allow(deprecated)]
-    fn deprecated_aliases_read_and_write_the_same_table() {
-        let mut c = ImpactCalibration::default();
-        c.set_dot_bottom_to_face_centre_mm(Club::Iron7, Some(31.0));
-        assert_eq!(c.dot_bottom_to_face_center_mm(Club::Iron7), Some(31.0));
-        assert_eq!(c.dot_bottom_to_face_centre_mm(Club::Iron7), Some(31.0));
     }
 }

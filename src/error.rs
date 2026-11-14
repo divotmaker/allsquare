@@ -1,9 +1,8 @@
 //! Error types.
 
-use core::fmt;
-
 /// Errors produced by this crate.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// A notification was shorter than its type requires.
     #[error("truncated {kind} frame: {len} bytes, need at least {need}")]
@@ -46,16 +45,3 @@ pub enum Error {
 
 /// Convenience alias.
 pub type Result<T> = core::result::Result<T, Error>;
-
-/// Status of a value the device declined to measure.
-///
-/// Club metrics use `0xffff` as a per-field sentinel *in addition* to the
-/// validity bitmask, so both must be checked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Invalid;
-
-impl fmt::Display for Invalid {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("--")
-    }
-}

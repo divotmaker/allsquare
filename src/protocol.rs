@@ -99,6 +99,7 @@ pub const HEARTBEAT_SECS: u64 = 5;
 
 /// Spin measurement mode, the second parameter of `DetectBall`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum SpinMode {
     /// `0x10`.
     Standard,
@@ -109,6 +110,7 @@ pub enum SpinMode {
 
 /// Speed unit for the device's own display. Does not affect the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum SpeedUnit {
     /// Meters per second.
     #[default]
@@ -119,6 +121,7 @@ pub enum SpeedUnit {
 
 /// Distance unit for the device's own display. Does not affect the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum DistanceUnit {
     /// Meters.
     #[default]
@@ -131,6 +134,7 @@ pub enum DistanceUnit {
 
 /// A command to the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Command {
     /// Start or stop ball detection.
     DetectBall {
@@ -232,6 +236,7 @@ impl Command {
 /// Device state machine, reported in every heartbeat ack.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum DeviceState {
     /// No club/idle state.
     None,
@@ -269,6 +274,7 @@ impl From<u8> for DeviceState {
 /// Charging status accompanying a battery notification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum ChargingState {
     /// Not charging.
     NotCharging,
@@ -387,6 +393,7 @@ pub struct Sensor {
 
 /// A decoded notification.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Notification {
     /// Ball detection state.
     Sensor(Sensor),

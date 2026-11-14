@@ -400,11 +400,13 @@ impl BluezTransport {
     /// they fail with [`io::ErrorKind::Interrupted`]. A call already in
     /// progress finishes, within the 2.5 s D-Bus call limit. `None` (the
     /// default) never refuses.
+    #[cfg_attr(not(feature = "driver"), allow(dead_code))] // read by the driver
     pub(crate) fn set_cancel(&mut self, cancel: Option<Arc<AtomicBool>>) {
         self.cancel = cancel;
     }
 
     /// When the notification the last [`Transport::read`] returned arrived.
+    #[cfg_attr(not(feature = "driver"), allow(dead_code))] // read by the driver
     pub(crate) fn received_at(&self) -> Option<SystemTime> {
         self.received
     }

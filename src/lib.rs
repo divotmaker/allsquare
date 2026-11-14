@@ -8,7 +8,7 @@
 //! profile and most of the wire protocol, but its club-selection codes are a
 //! different scheme entirely — the original encodes regular-vs-swing-stick in
 //! the second byte where the Omni encodes a club category, so
-//! [`Club::code`](club::Club::code) would select the wrong club on every club
+//! [`Club::code`] would select the wrong club on every club
 //! but the putter. It also reports battery through the standard `0x2a19`
 //! characteristic rather than the Omni's `0x91` notification, and has an
 //! alignment command this crate does not implement. Supporting it means a
@@ -87,6 +87,9 @@
 //!   launch monitor actor.
 //! - **`serde`**: serde derives on the public data types.
 //! - **`testing`**: see below.
+//! - **`raw-face-impact`**: temporary, for mapping the impact location to a
+//!   reference launch monitor: `shot.impact` carries the unscaled wire
+//!   values with the device's signs, labeled millimeters.
 //!
 //! # Testing
 //!
@@ -107,17 +110,17 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-pub mod client;
-pub mod club;
-pub mod error;
-pub mod impact;
+mod client;
+mod club;
+mod error;
+mod impact;
 pub mod protocol;
 
 #[cfg(any(feature = "bluez", feature = "btleplug"))]
 pub mod ble;
 
 #[cfg(feature = "bluez")]
-pub mod bluez;
+mod bluez;
 
 #[cfg(feature = "config")]
 pub mod config;
@@ -126,7 +129,7 @@ pub mod config;
 pub mod driver;
 
 #[cfg(feature = "btleplug")]
-pub mod btleplug_transport;
+mod btleplug_transport;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
