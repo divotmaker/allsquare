@@ -1,7 +1,7 @@
 //! Convert Square Golf shot data into FRP domain types.
 
 use flightrelay::types::{ClubData as FrpClubData, FaceImpact, Launch};
-use flightrelay::units::{Distance, Velocity};
+use flightrelay::{Distance, Velocity};
 
 use crate::protocol::{BallMetrics, ClubMetrics};
 
