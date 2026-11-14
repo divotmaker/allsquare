@@ -21,8 +21,9 @@ use crate::protocol::{
 ///
 /// Implementations must not require pairing — the device never bonds.
 pub trait Transport {
-    /// Read one notification payload. Return [`io::ErrorKind::WouldBlock`] when
-    /// nothing is available.
+    /// Read one notification payload into `buf[..n]` and return `n`, which
+    /// must not exceed `buf.len()` (a payload longer than `buf` is cut to
+    /// fit). Return [`io::ErrorKind::WouldBlock`] when nothing is available.
     ///
     /// # Errors
     /// Transport-specific I/O failures.
