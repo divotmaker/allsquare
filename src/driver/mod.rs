@@ -36,8 +36,11 @@
 //!   device has a ball and is ready, `no_ball` while it looks for one, and
 //!   `not_armed` otherwise; the battery level (not sent while the charge
 //!   state is unknown or there is no battery); the telemetry keys
-//!   `device_state` (`waiting`, `ready`, `recording`, `processing`) and
-//!   `zero_spin_discards`.
+//!   `device_state` (`idle`, `waiting`, `ready`, `recording`, `processing`,
+//!   or `unknown` before the first state and for a state this crate does
+//!   not know) and `zero_spin_discards` (`0` until the first discard).
+//! - **Phase:** `discovering` while it searches, then `measuring` once the
+//!   session is up.
 //! - **Close** disarms the device and disconnects it on either backend,
 //!   within 5 s. After a lost link it only lets go of the link.
 //! - **Raw frames:** each notification (`"notify 11 02"`, labeled with its
@@ -262,6 +265,7 @@ impl Omni {
             ctx.out.audit(wire.dir, &label, &wire.data);
         }
 
+        ctx.out.phase("measuring");
         OmniSession {
             client: opened.client,
             log: opened.log,
@@ -346,6 +350,7 @@ impl FrpDriver for Omni {
             .with_manufacturer(MANUFACTURER)
             .exclusive()
             .with_raw(RawProfile::new("square-ble", 64, 64, 0, no_bulk, false))
+            .with_telemetry(&[("device_state", "unknown"), ("zero_spin_discards", "0")])
     }
 
     fn new(config: Config) -> Result<Self, ConfigError> {
@@ -683,24 +688,21 @@ impl OmniSession {
             &Event::StateChanged(state) => {
                 out.log(Level::Debug, format!("device state: {state:?}"));
                 let label = match state {
-                    DeviceState::Detect => Some("waiting"),
-                    DeviceState::Ready => Some("ready"),
-                    DeviceState::Shot => Some("recording"),
-                    DeviceState::Done => Some("processing"),
-                    _ => None,
+                    DeviceState::None | DeviceState::Idle | DeviceState::Init => "idle",
+                    DeviceState::Detect => "waiting",
+                    DeviceState::Ready => "ready",
+                    DeviceState::Shot => "recording",
+                    DeviceState::Done => "processing",
+                    DeviceState::Unknown(_) => "unknown",
                 };
                 match state {
                     DeviceState::Ready => out.blockers(Vec::<String>::new()),
                     DeviceState::Detect => out.blockers([blockers::NO_BALL]),
                     _ => out.blockers([blockers::NOT_ARMED]),
                 }
-                // A state with no label clears the old one, so the actor never
-                // shows a state the device has left.
-                if let Some(label) = label {
-                    out.telemetry([("device_state", label)]);
-                } else {
-                    out.clear_telemetry(["device_state"]);
-                }
+                // Every state has a label, so the actor never shows a state
+                // the device has left.
+                out.telemetry([("device_state", label)]);
             }
             &Event::Battery { percent, state } => {
                 out.log(Level::Debug, format!("battery {percent}% {state:?}"));

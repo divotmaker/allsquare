@@ -619,17 +619,32 @@ fn state_and_battery_become_status() {
 #[test]
 fn looking_for_a_ball_is_no_ball_and_a_shot_is_not_armed() {
     let mut rig = Rig::new(Config::default(), TurnHints::default());
-    rig.poll();
+    let mut seen = rig.poll();
     for (state, blocker, label) in [
+        (DeviceState::Idle, Some(blockers::NOT_ARMED), "idle"),
         (DeviceState::Detect, Some(blockers::NO_BALL), "waiting"),
         (DeviceState::Ready, None, "ready"),
         (DeviceState::Shot, Some(blockers::NOT_ARMED), "recording"),
         (DeviceState::Done, Some(blockers::NOT_ARMED), "processing"),
+        (
+            DeviceState::Unknown(9),
+            Some(blockers::NOT_ARMED),
+            "unknown",
+        ),
     ] {
         rig.link.feed(&testing::heartbeat_ack(state));
-        let held = status(&rig.poll());
+        let events = rig.poll();
+        let held = status(&events);
         assert_eq!(held.blockers, Vec::from_iter(blocker), "{state:?}");
         assert_eq!(held.telemetry["device_state"], label);
+        seen.extend(events);
+    }
+    // Every state's actor carries the same, declared keys.
+    let info = Omni::info(&Config::default());
+    for status in statuses(&seen) {
+        let actor = info.bus_actor("x", Duration::from_secs(2), None, &status);
+        let keys: Vec<String> = actor.telemetry.expect("telemetry").into_keys().collect();
+        assert_eq!(keys, ["device_state", "zero_spin_discards"]);
     }
 }
 
