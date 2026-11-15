@@ -138,6 +138,9 @@ pub use club::{Category, Club, Handed};
 #[cfg(feature = "config")]
 pub use config::Config;
 pub use error::{Error, Result};
+/// The flightrelay SDK this crate was built with, so callers name its types at the same version.
+#[cfg(feature = "config")]
+pub use flightrelay;
 pub use impact::ImpactCalibration;
 pub use protocol::{
     BallMetrics, ChargingState, ClubMetrics, Command, DeviceState, DistanceUnit, Notification,
