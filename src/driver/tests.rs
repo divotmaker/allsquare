@@ -460,11 +460,18 @@ fn a_zero_spin_misread_is_discarded() {
     );
 
     // The discarded shot took no number; the count keeps going.
-    let events = rig.shot(&ball, &club);
+    let again = rig.shot(&ball, &club);
     assert_eq!(
-        telemetry(&events, "zero_spin_discards"),
+        telemetry(&again, "zero_spin_discards"),
         [Some("2".to_owned())]
     );
+    // A discard's actor carries the same, declared keys.
+    let info = Omni::info(&Config::default());
+    for status in statuses(&[events, again].concat()) {
+        let actor = info.bus_actor("x", Duration::from_secs(2), None, &status);
+        let keys: Vec<String> = actor.telemetry.expect("telemetry").into_keys().collect();
+        assert_eq!(keys, ["device_state", "zero_spin_discards"]);
+    }
     let (ball, club) = iron();
     let events = rig.shot(&ball, &club);
     let FrpBody::ShotTrigger(ShotTrigger { key, .. }) = bodies(&events)[0] else {
