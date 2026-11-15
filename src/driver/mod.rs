@@ -52,7 +52,7 @@
 //! The card label adds its BLE address, which pins the device in the config.
 //! Neither goes on the bus: the actor id identifies the launch monitor there.
 
-mod convert;
+pub mod convert;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
@@ -68,11 +68,10 @@ use flightrelay::{RawDir, RawFrame, Severity, Source, Velocity, blockers};
 
 use crate::client::{Client, Event, Transport};
 use crate::club::{Club, Handed};
-use crate::config::{Settings, nearest_club};
+use crate::config::{Config, Settings, nearest_club};
 use crate::protocol::{self, BallMetrics, ChargingState, Command, DeviceState, Notification};
 
-pub use crate::config::Config;
-pub use convert::{club_data, face_impact, launch};
+use convert::{club_data, face_impact, launch};
 
 const MANUFACTURER: &str = "Invant";
 
