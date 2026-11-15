@@ -1,24 +1,23 @@
 //! Platform-agnostic transport selection.
 //!
-//! Picks the backend appropriate to the target and enabled features, so callers
-//! do not need `cfg` blocks. If both are enabled on Linux, `BlueZ` wins — it is
-//! the verified path there.
+//! Picks the backend for the target, so callers do not need `cfg` blocks:
+//! `BlueZ` on Linux, btleplug elsewhere.
 
 use std::sync::atomic::AtomicBool;
 
 use crate::error::Result;
 
-#[cfg(feature = "bluez")]
+#[cfg(target_os = "linux")]
 pub use crate::bluez::BluezTransport;
-#[cfg(feature = "btleplug")]
+#[cfg(not(target_os = "linux"))]
 pub use crate::btleplug_transport::BtleplugTransport;
 
 /// The transport this build will use.
-#[cfg(feature = "bluez")]
+#[cfg(target_os = "linux")]
 pub type BleTransport = BluezTransport;
 
 /// The transport this build will use.
-#[cfg(all(feature = "btleplug", not(feature = "bluez")))]
+#[cfg(not(target_os = "linux"))]
 pub type BleTransport = BtleplugTransport;
 
 /// Scan for a Square Golf device and connect to it.
@@ -33,7 +32,7 @@ pub type BleTransport = BtleplugTransport;
 ///
 /// # Errors
 /// [`crate::Error::NotFound`] if no device appears, or a backend error.
-#[cfg(feature = "bluez")]
+#[cfg(target_os = "linux")]
 pub fn connect(address: Option<&str>) -> Result<BleTransport> {
     BluezTransport::connect(address, "hci0")
 }
@@ -50,7 +49,7 @@ pub fn connect(address: Option<&str>) -> Result<BleTransport> {
 ///
 /// # Errors
 /// [`crate::Error::NotFound`] if no device appears, or a backend error.
-#[cfg(all(feature = "btleplug", not(feature = "bluez")))]
+#[cfg(not(target_os = "linux"))]
 pub fn connect(address: Option<&str>) -> Result<BleTransport> {
     BtleplugTransport::connect(address)
 }
@@ -64,7 +63,7 @@ pub fn connect(address: Option<&str>) -> Result<BleTransport> {
 ///
 /// # Errors
 /// As [`connect`].
-#[cfg(feature = "bluez")]
+#[cfg(target_os = "linux")]
 pub fn connect_cancelable(
     address: Option<&str>,
     cancel: &AtomicBool,
@@ -81,7 +80,7 @@ pub fn connect_cancelable(
 ///
 /// # Errors
 /// As [`connect`].
-#[cfg(all(feature = "btleplug", not(feature = "bluez")))]
+#[cfg(not(target_os = "linux"))]
 pub fn connect_cancelable(
     address: Option<&str>,
     cancel: &AtomicBool,

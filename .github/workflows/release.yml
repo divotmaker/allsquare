@@ -19,10 +19,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Clippy
-        run: cargo clippy --all-targets --features bluez,frp,serde,testing,raw-face-impact -- -D warnings
+        run: cargo clippy --all-targets --features frp,serde,testing,raw-face-impact -- -D warnings
 
       - name: Run tests
-        run: cargo test --features bluez,frp,serde,testing
+        run: cargo test --features frp,serde,testing
 
   publish:
     name: Publish to crates.io
@@ -80,12 +80,12 @@ jobs:
           # elsewhere. Each target builds only the backend it can use.
           - name: linux
             target: x86_64-unknown-linux-gnu
-            features: bluez,frp
+            features: frp
             artifact: allsquare-frp
             asset_name: allsquare-frp-linux-x86_64
           - name: windows
             target: x86_64-pc-windows-gnu
-            features: btleplug,frp
+            features: frp
             artifact: allsquare-frp.exe
             asset_name: allsquare-frp-windows-x86_64.exe
     steps:

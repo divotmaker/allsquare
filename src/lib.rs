@@ -74,14 +74,13 @@
 //!
 //! # Features
 //!
-//! - **`bluez`** (Linux) or **`btleplug`** (Windows, macOS): the BLE
-//!   transport, `allsquare::ble::connect`.
+//! - **`ble`**: the BLE transport, `allsquare::ble::connect`: `BlueZ` on
+//!   Linux, btleplug on Windows and macOS.
 //! - **`config`**: the driver's settings, `allsquare::config::Config`, with
 //!   no BLE stack (for a settings form or a WebAssembly UI).
 //! - **`driver`**: `allsquare::driver::Omni`, a
 //!   [flightrelay](https://github.com/flightrelay/sdk-rust) `FrpDriver`
-//!   that runs the device for any host of that contract. Connecting needs a
-//!   BLE backend too.
+//!   that runs the device for any host of that contract (implies `ble`).
 //! - **`frp`**: the `allsquare-frp` binary, which puts the device on a
 //!   [Flight Relay Protocol](https://github.com/flightrelay/spec) bus as a
 //!   launch monitor actor.
@@ -116,10 +115,10 @@ mod error;
 mod impact;
 pub mod protocol;
 
-#[cfg(any(feature = "bluez", feature = "btleplug"))]
+#[cfg(feature = "ble")]
 pub mod ble;
 
-#[cfg(feature = "bluez")]
+#[cfg(all(feature = "ble", target_os = "linux"))]
 mod bluez;
 
 #[cfg(feature = "config")]
@@ -128,7 +127,7 @@ pub mod config;
 #[cfg(feature = "driver")]
 pub mod driver;
 
-#[cfg(feature = "btleplug")]
+#[cfg(all(feature = "ble", not(target_os = "linux")))]
 mod btleplug_transport;
 
 #[cfg(any(test, feature = "testing"))]

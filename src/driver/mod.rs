@@ -2,8 +2,8 @@
 //!
 //! [`Omni`] runs a Square Golf Omni for any host of flightrelay's driver
 //! contract: flightrelay's `FrpServer`, the `allsquare-frp`
-//! binary, or an application that embeds the driver. Connecting needs a BLE
-//! backend (the `bluez` or `btleplug` feature).
+//! binary, or an application that embeds the driver. It connects over the
+//! platform BLE transport (`ble`, which `driver` turns on).
 //!
 //! What a session does:
 //!
@@ -52,13 +52,6 @@
 //! The card label adds its BLE address, which pins the device in the config.
 //! Neither goes on the bus: the actor id identifies the launch monitor there.
 
-// Without a BLE backend or `testing` nothing opens a link, so the session
-// half of this module is never used.
-#![cfg_attr(
-    not(any(test, feature = "testing", feature = "bluez", feature = "btleplug")),
-    allow(dead_code)
-)]
-
 mod convert;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -90,7 +83,7 @@ const IDLE_READS: u32 = 3;
 const DISARM_LIMIT: Duration = Duration::from_secs(2);
 
 /// How long a btleplug disconnect may take.
-#[cfg(feature = "btleplug")]
+#[cfg(not(target_os = "linux"))]
 const RELEASE_LIMIT: Duration = Duration::from_secs(3);
 
 /// Why a connect or a session ended.
@@ -146,7 +139,7 @@ pub trait BleLink: Transport + Send {
     }
 }
 
-#[cfg(feature = "bluez")]
+#[cfg(target_os = "linux")]
 impl BleLink for crate::bluez::BluezTransport {
     fn name(&self) -> &str {
         Self::name(self)
@@ -165,7 +158,7 @@ impl BleLink for crate::bluez::BluezTransport {
     }
 }
 
-#[cfg(feature = "btleplug")]
+#[cfg(not(target_os = "linux"))]
 impl BleLink for crate::btleplug_transport::BtleplugTransport {
     fn name(&self) -> &str {
         Self::name(self)
@@ -290,7 +283,6 @@ impl Omni {
     /// Scan, connect and read the identity on a thread of its own, so the
     /// host keeps ticking and a stop is seen within about 50 ms. A link that
     /// opens after a stop is released again.
-    #[cfg(any(feature = "bluez", feature = "btleplug"))]
     fn open_ble(&self, ctx: &mut ConnectCtx<'_>) -> Result<Opened, Error> {
         let address = self.settings.address.clone();
         let settings = self.settings.clone();
@@ -310,7 +302,6 @@ impl Omni {
 }
 
 /// Scan, connect and read the identity, giving up when `cancel` is set.
-#[cfg(any(feature = "bluez", feature = "btleplug"))]
 fn open_link(
     address: Option<&str>,
     settings: &Settings,
@@ -373,18 +364,8 @@ impl FrpDriver for Omni {
         ctx.out.phase("discovering");
         ctx.out
             .log(Level::Info, "searching for Square Golf device...");
-        #[cfg(any(feature = "bluez", feature = "btleplug"))]
-        {
-            let opened = self.open_ble(ctx)?;
-            Ok(self.session(ctx, opened))
-        }
-        #[cfg(not(any(feature = "bluez", feature = "btleplug")))]
-        {
-            Err(crate::Error::Backend(
-                "built without a BLE backend: enable the `bluez` or `btleplug` feature".into(),
-            )
-            .into())
-        }
+        let opened = self.open_ble(ctx)?;
+        Ok(self.session(ctx, opened))
     }
 
     fn apply_config(&mut self, new: &Config) {
@@ -488,7 +469,6 @@ impl Opened {
         }
     }
 
-    #[cfg_attr(not(any(feature = "bluez", feature = "btleplug")), allow(dead_code))] // read by the BLE connect
     fn release(&mut self) {
         let _ = self.client.transport_mut().inner.release();
     }

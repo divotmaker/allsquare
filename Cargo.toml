@@ -12,13 +12,17 @@ categories = ["hardware-support", "science"]
 [dependencies]
 thiserror = "2"
 serde = { version = "1", features = ["derive"], optional = true }
+flightrelay = { version = "0.6.0", optional = true }
 
-# Linux: BlueZ over D-Bus. Also used for scanning even when GATT is elsewhere.
+# BLE backend deps are optional and target-conditional: the `ble` feature
+# turns them on, and only the right platform's deps are compiled.
+# Linux: BlueZ over D-Bus.
+[target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5", features = ["blocking-api"], optional = true }
 
-# Cross-platform BLE. Verified on Windows (WinRT).
+# Elsewhere: btleplug. Verified on Windows (WinRT).
+[target.'cfg(not(target_os = "linux"))'.dependencies]
 btleplug = { version = "0.11", optional = true }
-flightrelay = { version = "0.6.0", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"], optional = true }
 futures = { version = "0.3", optional = true }
 uuid = { version = "1", optional = true }
@@ -30,23 +34,22 @@ serde_json = "1"
 [[bin]]
 name = "allsquare-frp"
 path = "src/bin/allsquare-frp.rs"
-# A transport is also needed, but Cargo cannot express "frp AND (bluez OR
-# btleplug)" — the binary emits a compile_error if neither is enabled.
 required-features = ["frp"]
 
 [features]
 default = []
+# The platform BLE transport (`allsquare::ble`): BlueZ on Linux, btleplug
+# elsewhere.
+ble = ["dep:zbus", "dep:btleplug", "dep:tokio", "dep:futures", "dep:uuid"]
+# Serde derives on the public data types.
 serde = ["dep:serde"]
-bluez = ["dep:zbus"]
 # The driver's settings (`allsquare::config`), with no BLE stack: what a
 # settings form or a WebAssembly UI needs.
 config = ["dep:flightrelay", "flightrelay/config", "serde"]
-# The `FrpDriver` (`allsquare::driver`). Connecting needs `bluez` or
-# `btleplug` too.
-driver = ["config", "flightrelay/driver"]
-# The `allsquare-frp` binary.
+# The `FrpDriver` (`allsquare::driver`), with the BLE transport.
+driver = ["config", "ble", "flightrelay/driver"]
+# The `allsquare-frp` binary: the driver served over FRP.
 frp = ["driver", "flightrelay/server", "flightrelay/main"]
-btleplug = ["dep:btleplug", "dep:tokio", "dep:futures", "dep:uuid"]
 # Temporary, for mapping the Omni's impact location to a reference launch
 # monitor (divotmaker/allsquare#1): report impact as the unscaled wire values,
 # with the device's signs, labeled millimeters.
@@ -56,7 +59,7 @@ raw-face-impact = []
 testing = []
 
 [package.metadata.docs.rs]
-features = ["bluez", "frp", "serde", "testing"]
+features = ["frp", "serde", "testing"]
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

@@ -1,13 +1,12 @@
 //! Connect to a Square Golf device, arm it, and print shots.
 //!
 //! ```sh
-//! cargo run --example monitor --features bluez             # Linux
-//! cargo run --example monitor --features btleplug          # Windows/macOS
-//! cargo run --example monitor --features bluez -- 7i
+//! cargo run --example monitor --features ble
+//! cargo run --example monitor --features ble -- 7i
 //! ```
 
-// The BLE backend is chosen by feature; without one there is nothing to run.
-#[cfg(any(feature = "bluez", feature = "btleplug"))]
+// Without the BLE transport there is nothing to run.
+#[cfg(feature = "ble")]
 mod monitor {
     use std::time::Duration;
 
@@ -101,12 +100,12 @@ mod monitor {
     }
 }
 
-#[cfg(any(feature = "bluez", feature = "btleplug"))]
+#[cfg(feature = "ble")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     monitor::run()
 }
 
-#[cfg(not(any(feature = "bluez", feature = "btleplug")))]
+#[cfg(not(feature = "ble"))]
 fn main() {
-    eprintln!("build with --features bluez (Linux) or --features btleplug (Windows/macOS)");
+    eprintln!("build with --features ble");
 }

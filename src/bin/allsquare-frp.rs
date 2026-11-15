@@ -11,12 +11,6 @@
 //! allsquare-frp --help                               # every flag and setting
 //! ```
 
-#[cfg(not(any(feature = "bluez", feature = "btleplug")))]
-compile_error!(
-    "allsquare-frp also needs a transport: enable `bluez` (Linux) or \
-     `btleplug` (Windows/macOS), e.g. --features frp,bluez"
-);
-
 use std::process::ExitCode;
 
 fn main() -> ExitCode {

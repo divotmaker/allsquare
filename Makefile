@@ -1,13 +1,13 @@
 .PHONY: build test clippy fmt check example
 
 build:
-	cargo build --lib --features bluez,serde
+	cargo build --lib --features ble,serde
 
 test:
-	cargo test --lib --features bluez,serde
+	cargo test --lib --features ble,serde
 
 clippy:
-	cargo clippy --lib --all-targets --features bluez,serde -- -D warnings
+	cargo clippy --lib --all-targets --features ble,serde -- -D warnings
 
 fmt:
 	cargo fmt --all
@@ -16,10 +16,9 @@ fmt:
 check:
 	cargo build --lib
 	cargo build --lib --features serde
-	cargo build --lib --features bluez
-	cargo build --lib --features btleplug
-	cargo build --lib --features bluez,btleplug,serde
-	cargo build --lib --target x86_64-pc-windows-gnu --features btleplug
+	cargo build --lib --features ble
+	cargo build --lib --features ble,serde
+	cargo build --lib --target x86_64-pc-windows-gnu --features ble
 
 example:
-	cargo run --example monitor --features bluez -- $(club)
+	cargo run --example monitor --features ble -- $(club)
