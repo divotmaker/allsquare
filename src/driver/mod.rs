@@ -70,8 +70,8 @@ use flightrelay::driver::{
     Activity, ConnectCtx, DeviceIdentity, DriverInfo, Events, FrpDriver, FrpSession, Level,
     NoAction, RawProfile, ShotIds, Stopped, TurnHints,
 };
-use flightrelay::types::blockers;
-use flightrelay::{RawDir, RawFrame, Severity, Source, Velocity};
+
+use flightrelay::{RawDir, RawFrame, Severity, Source, Velocity, blockers};
 
 use crate::client::{Client, Event, Transport};
 use crate::club::{Club, Handed};
