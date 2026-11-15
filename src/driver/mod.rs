@@ -748,10 +748,7 @@ impl OmniSession {
 
         let key = self.ids.next_key();
         out.log(Level::Info, format!("shot #{}", key.shot_number));
-        match ball_at {
-            Some(ms) => out.shot_trigger_at(key.clone(), ms),
-            None => out.shot_trigger(key.clone()),
-        }
+        out.shot_trigger(key.clone(), ball_at);
         let l = launch(ball);
         out.log(
             Level::Debug,
@@ -865,7 +862,7 @@ impl FrpSession for OmniSession {
         &self.identity
     }
 
-    fn close(mut self, out: &mut Events<'_>) -> Result<(), Error> {
+    fn close(mut self, out: &mut Events<'_>) {
         // After a lost link there is nothing to disarm, and the disconnect
         // may fail for the same reason the link did.
         let lost = self.link == LinkState::Lost;
@@ -877,18 +874,17 @@ impl FrpSession for OmniSession {
         self.drain(out);
         self.link = LinkState::Released;
         let released = self.client.transport_mut().inner.release();
-        if lost {
-            if let Err(e) = released {
-                out.log(
-                    Level::Debug,
-                    format!("disconnect after the link was lost: {e}"),
-                );
-            }
-            return Ok(());
+        if let Err(e) = disarmed {
+            out.log(Level::Warn, format!("disarm failed: {e}"));
         }
-        disarmed?;
-        released?;
-        Ok(())
+        match released {
+            Err(e) if lost => out.log(
+                Level::Debug,
+                format!("disconnect after the link was lost: {e}"),
+            ),
+            Err(e) => out.log(Level::Warn, format!("disconnect failed: {e}")),
+            Ok(()) => {}
+        }
     }
 }
 

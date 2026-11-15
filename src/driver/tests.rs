@@ -170,7 +170,7 @@ impl Rig {
 
     fn close(&mut self) -> Vec<DeviceEvent> {
         let session = self.session.take().expect("open");
-        self.host.with(|_, out| session.close(out)).expect("close");
+        self.host.with(|_, out| session.close(out));
         self.host.take()
     }
 
@@ -737,7 +737,7 @@ fn a_silent_device_ends_the_session_after_the_link_timeout() {
 }
 
 #[test]
-fn close_after_a_lost_link_writes_nothing_and_succeeds() {
+fn close_after_a_lost_link_writes_nothing_and_releases() {
     let mut rig = Rig::new(Config::default(), TurnHints::default());
     rig.poll();
     let written = rig.link.wires().written.len();
