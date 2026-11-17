@@ -237,8 +237,7 @@ impl<T: Transport> Client<T> {
 
     /// Arm ball detection for `club`.
     ///
-    /// Arming once is sufficient — the device stays armed across shots. The
-    /// official app re-arms after each shot, but it is not required.
+    /// Arming once is sufficient — the device stays armed across shots.
     ///
     /// # Errors
     /// If the transport fails.
@@ -404,7 +403,7 @@ impl<T: Transport> Client<T> {
             .filter(|s| !s.is_empty())
             .or_else(|| self.transport.model_hint())
             .unwrap_or_default();
-        // The app sends this first; the device answers with a 0x06.
+        // The device answers with a 0x06.
         self.send(Command::Query)?;
         self.last_heartbeat = now;
         self.send(Command::Heartbeat)?;

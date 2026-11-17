@@ -4,10 +4,8 @@
 //! category exists to disambiguate numbers that would otherwise collide — a
 //! 5-wood and a 5-iron are both number 5.
 //!
-//! Recovered by cycling every club in the Omni app's UI while returning to a
-//! known club between each selection. Entries marked *inferred* follow the same
-//! numbering but were not themselves observed on the wire, because the test
-//! unit's bag did not offer them.
+//! Entries marked *inferred* follow the same numbering as the confirmed ones
+//! but are not themselves confirmed on a device.
 //!
 //! Note these are **not** the original Square's codes, which used a
 //! regular/swing-stick distinction in the second byte.
@@ -127,8 +125,8 @@ impl Club {
         }
     }
 
-    /// Whether this club's code has been observed on the wire, as opposed to
-    /// inferred from the numbering scheme.
+    /// Whether this club's code is confirmed, as opposed to inferred from
+    /// the numbering scheme.
     #[must_use]
     pub const fn is_confirmed(self) -> bool {
         !matches!(
@@ -205,8 +203,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn confirmed_codes_match_the_capture() {
-        // Every one of these was observed in the app's club sweep.
+    fn confirmed_codes() {
         assert_eq!(Club::Driver.code(), (0x01, Category::Driver));
         assert_eq!(Club::Wood3.code(), (0x03, Category::WoodHybrid));
         assert_eq!(Club::Hybrid3.code(), (0x0D, Category::WoodHybrid));

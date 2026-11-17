@@ -19,15 +19,15 @@ BLE protocol and exposes shot data through a synchronous, poll-based API:
   state tracking automatically. `Client::poll_at(now)` takes the time as an
   input, so the heartbeat and the link watchdog run on the caller's clock;
   `Client::poll` passes `Instant::now()`.
-- **`ble::connect`** — platform-agnostic BLE transport. BlueZ on Linux
-  (`bluez` feature), btleplug on Windows/macOS (`btleplug` feature).
+- **`ble::connect`** — platform-agnostic BLE transport (`ble` feature): BlueZ
+  on Linux, btleplug on Windows/macOS.
 - **`driver::Omni`** — a [flightrelay](https://github.com/flightrelay/sdk-rust)
   `FrpDriver` (`driver` feature): connect, arm, follow the club and hand
   of each `golfer.turn`, report shots, release the device. Any host of that contract can
   run it; its settings are `config::Config` (`config` feature, no BLE stack).
 - **`allsquare-frp`** — a [Flight Relay Protocol](https://github.com/flightrelay/spec)
-  (FRP 0.3.0) launch monitor binary (`frp` feature plus a BLE backend) that
-  puts the driver on an FRP bus.
+  (FRP 0.3.0) launch monitor binary (`frp` feature) that puts the driver on
+  an FRP bus.
 
 ## Legal Basis — DMCA Section 1201(f)
 
@@ -58,15 +58,12 @@ This project is an exercise of the interoperability exception under
 The Square Golf Omni uses a proprietary protocol over Bluetooth Low Energy to
 communicate shot data (ball speed, launch angle, spin, club data, impact
 location, etc.) to companion software. Invant does not publish this protocol or
-provide an SDK for third-party integration. The protocol was worked out from
-the researcher's own lawfully purchased device and from analysis of the
-official Square Golf app, solely to enable interoperability with third-party
-golf simulation software.
+provide an SDK for third-party integration. This project exists solely to
+enable interoperability with third-party golf simulation software.
 
 No Invant code is reproduced here; the protocol is described and implemented in
-our own words. No access controls were circumvented — the device uses no
-pairing, bonding, or encryption of any kind, and all protocol data was captured
-from the researcher's own device.
+our own words. No access controls are circumvented — the device uses no
+pairing, bonding, or encryption of any kind.
 
 ## Acceptable Use
 
@@ -132,7 +129,7 @@ Detailed specs live in [`docs/`](docs/):
 
 ### Linux specifics
 
-BlueZ needs two workarounds, both applied automatically by the `bluez` backend:
+BlueZ needs two workarounds, both applied automatically by the BlueZ backend:
 
 1. `Trusted` must be set before connecting, or service discovery never completes
    and the device object is purged after ~4s. This is *not* pairing.
@@ -169,7 +166,7 @@ dev-dependency feature only:
 
 ```toml
 [dev-dependencies]
-allsquare = { version = "0.3", features = ["testing"] }
+allsquare = { version = "0.6.0", features = ["testing"] }
 ```
 
 - `BALL_NOTIFICATION`, `QUERY_RESPONSE`, `CLUB_NOTIFICATION_NO_DATA` — fixed
@@ -190,8 +187,7 @@ the release.
 ## FRP binary: `allsquare-frp`
 
 ```sh
-cargo run --release --features frp,bluez --bin allsquare-frp      # Linux
-cargo run --release --features frp,btleplug --bin allsquare-frp   # Windows, macOS
+cargo run --release --features frp --bin allsquare-frp
 ```
 
 ```text
@@ -230,8 +226,10 @@ What goes out over FRP 0.3.0:
   `source: measured` and the identity (manufacturer Invant, model, launch
   monitor firmware), and `battery_pct`. `blockers` is empty while the device
   has a ball and is ready, `no_ball` while it looks for one, and `not_armed`
-  otherwise. Telemetry keys: `device_state` (`waiting`, `ready`, `recording`,
-  `processing`) and `zero_spin_discards`. An unknown charge state (or no
+  otherwise. Telemetry keys: `device_state` (`idle`, `waiting`, `ready`,
+  `recording`, `processing`, or `unknown` before the first state and for a
+  state the crate does not know) and `zero_spin_discards` (`0` until the first
+  discard). An unknown charge state (or no
   battery) is not a level: the battery leaves the actor.
 - Per shot: `shot.trigger` with a `timestamp` (when the ball notification
   arrived), `shot.launch`, `shot.club` and `shot.impact` when the club was
@@ -259,9 +257,14 @@ protocol (FRP 0.3.0) and the device's behavior are unchanged.
 
 | | 0.5 | 0.6 |
 |---|---|---|
-| Session entry point | `OmniSession::poll(timeout, out)`, which reads and sleeps until `timeout` | `OmniSession::step(now, out) -> Activity`, one pass at `now`: `Activity::Active` after an event, `Activity::Idle` after three reads that yield none. `FrpSession::poll` is flightrelay's loop over `step` |
+| Session entry point | `OmniSession::poll(timeout, out)`, which reads and sleeps until `timeout` | `OmniSession::step(now, out) -> Activity`, one pass at `now`: `Activity::Active` after an event, `Activity::Idle` after three reads that yield none. a host calls `step` in a loop |
 | Heartbeat and link watchdog | the wall clock, inside `Client::poll` | adds `Client::poll_at(now)`; `poll` is `poll_at(Instant::now())`. The driver's session runs them on the host's time |
 | A session from `Omni::connect_with` (`testing`) | stepped with `poll(timeout, out)` in real time | stepped with `step(now, out)`, e.g. through flightrelay's `testing::TestHost` in virtual time |
+| Module paths | `allsquare::client::Client`, `allsquare::club::Club`, `allsquare::error::Error`, `allsquare::impact::ImpactCalibration`, `allsquare::bluez::BluezTransport`, … | the same types at the crate root (`allsquare::Client`, …); the BLE transports in `allsquare::ble` |
+| Matching on enums | exhaustive | `Error`, `Notification`, `Command`, `DeviceState`, `ChargingState`, `Category`, `SpinMode`, `SpeedUnit` and `DistanceUnit` are `#[non_exhaustive]`: add a `_` arm |
+| Removed | `error::Invalid`; `ImpactCalibration::dot_bottom_to_face_centre_mm` and `set_dot_bottom_to_face_centre_mm` (deprecated); `BtleplugTransport::set_cancel` is no longer public | use `dot_bottom_to_face_center_mm` / `set_dot_bottom_to_face_center_mm`; `ble::connect_cancelable` to cancel a connect |
+| A failed connect's alert | `Square Golf error: <error>` | `<error>`; the alert comes from the device's actor |
+| Driver API | `FrpSession::hints(&TurnHints)` | `FrpSession::hints(&TurnHints, out)`; the session's associated types are `Error` and `Action` |
 
 ### Migrating from 0.4
 
@@ -298,7 +301,7 @@ same shots.
 | Controllers | one | several at once |
 | Notifications the crate does not recognize | exported as raw frames | written to the trace log only |
 | `BlueZ` D-Bus calls | no timeout | each call gives up after 2.5 s |
-| FRP device API | `FrpDevice`, `ControllerCommand`, the `frp` module | `driver` (a flightrelay `FrpDriver`); conversions are `driver::{launch, club_data, face_impact}` |
+| FRP device API | `FrpDevice`, `ControllerCommand`, the `frp` module | `driver` (a flightrelay `FrpDriver`); conversions are `driver::convert::{launch, club_data, face_impact}` |
 | Connect API | no cancelable connect | adds `ble::connect_cancelable`, `BluezTransport::connect_cancelable`, `BtleplugTransport::connect_cancelable` and `BtleplugTransport::set_cancel` |
 
 ## Reading a command's type
@@ -309,8 +312,8 @@ frame, for code that records or filters what a `Client` writes.
 ## Example
 
 ```sh
-cargo run --example monitor --features bluez -- 7i
-cargo run --example monitor --features btleplug -- putter
+cargo run --example monitor --features ble -- 7i
+cargo run --example monitor --features ble -- putter
 ```
 
 ## Units

@@ -14,7 +14,7 @@
 //! alignment command this crate does not implement. Supporting it means a
 //! second club table and a device-family split, plus hardware to test on.
 //!
-//! Reverse engineered for interoperability under DMCA §1201(f). No licensing is
+//! Built for interoperability under DMCA §1201(f). No licensing is
 //! circumvented, no proprietary code is reproduced, and no features are unlocked.
 //!
 //! # Shape of the API

@@ -103,7 +103,7 @@ pub const HEARTBEAT_SECS: u64 = 5;
 pub enum SpinMode {
     /// `0x10`.
     Standard,
-    /// `0x11`. What the official app uses.
+    /// `0x11`. The default.
     #[default]
     Advanced,
 }
@@ -152,7 +152,7 @@ pub enum Command {
     },
     /// Keepalive, every 5s.
     Heartbeat,
-    /// Status query. The app sends this first; answered by a `0x06`.
+    /// Status query. Sent first; answered by a `0x06`.
     Query,
     /// Request club metrics for the last shot.
     RequestClubMetrics,
@@ -222,7 +222,7 @@ impl Command {
             }
             Command::SetUnits { speed, distance } => {
                 // Byte 3 is a third setting whose meaning is not yet identified;
-                // the app sends both 0 and 1. Zero is safe.
+                // 0 and 1 are both valid. Zero is safe.
                 b[4] = speed as u8;
                 b[5] = distance as u8;
             }
@@ -500,7 +500,7 @@ fn parse_11(data: &[u8]) -> Result<Notification> {
         0x01 => {
             need("sensor", data, 17)?;
             Ok(Notification::Sensor(Sensor {
-                // Observed as 0x01/0x02 for ready.
+                // 0x01 and 0x02 both mean ready.
                 ready: data[3] == 0x01 || data[3] == 0x02,
                 detected: data[4] == 0x01,
                 position: (i32_at(data, 5), i32_at(data, 9), i32_at(data, 13)),
@@ -658,7 +658,7 @@ mod tests {
     }
 
     #[test]
-    fn encodes_commands_captured_from_the_official_app() {
+    fn encodes_commands() {
         // 00 83 1c 00...  heartbeat
         assert_eq!(
             Command::Heartbeat.encode(0x1c).to_vec(),

@@ -58,8 +58,8 @@ pub fn club_data(c: &ClubMetrics) -> FrpClubData {
 /// Convert [`ClubMetrics`] impact location to an FRP [`FaceImpact`], if present.
 ///
 /// **The lateral sign is inverted.** FRP defines `lateral` as "positive =
-/// toward toe"; the device reports negative toward the toe (verified against
-/// the vendor app's own impact display for a right-handed player). `vertical`
+/// toward toe"; the device reports negative toward the toe (for a right-handed
+/// player). `vertical`
 /// needs no adjustment — both call positive "above center".
 ///
 /// Both are millimeters from face center (beta calibration; see
@@ -90,7 +90,7 @@ pub fn face_impact(c: &ClubMetrics) -> Option<FaceImpact> {
 mod tests {
     use super::*;
 
-    /// A real tracked wedge chip, from an Omni capture.
+    /// A tracked wedge chip.
     fn tracked_chip() -> (BallMetrics, ClubMetrics) {
         let ball = BallMetrics {
             shot_type: 0x37,
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn zero_spin_sends_a_zero_total_and_no_axis() {
-        // Captured 1.59 m/s putt: every spin field zero.
+        // A 1.59 m/s putt: every spin field zero.
         let putt = BallMetrics {
             shot_type: 0x37,
             speed: 1.59,
